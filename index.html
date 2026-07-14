@@ -901,6 +901,56 @@
 
     .composer-icon-btn svg { width: 16px; height: 16px; }
 
+    .composer-model-select {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border-soft);
+      border-radius: 16px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-family: var(--font);
+      font-weight: 450;
+      padding: 4px 24px 4px 10px;
+      cursor: pointer;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+      max-width: 160px;
+      height: 28px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237a7874' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 4px center;
+      background-size: 12px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .composer-model-select:hover { border-color: var(--border-strong); background: rgba(255,255,255,0.08); }
+    .composer-model-select:focus { border-color: var(--accent); }
+    .composer-model-select option { background: #2a2a2a; color: var(--text); font-size: 12px; }
+
+    .composer-add-model {
+      display: none;
+      padding: 10px 12px;
+      margin: 4px 0 0;
+      border-radius: 14px;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid var(--border-soft);
+    }
+
+    .composer-add-model.visible { display: block; }
+
+    .composer-add-model-head {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+
+    .composer-add-model-row { margin-bottom: 6px; }
+    .composer-add-model-row:last-child { margin-bottom: 0; }
+    .composer-add-model-row .setting-input { font-size: 12px; padding: 6px 10px; }
+
     .send-btn {
       width: 30px;
       height: 30px;
@@ -1628,6 +1678,7 @@
                   </svg>
                 </button>
                 <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
+                <select class="composer-model-select" id="composerModelSelect" title="Quick model switch" aria-label="Switch model"></select>
               </div>
               <div class="composer-right">
 <button class="send-btn" id="sendBtn" disabled title="Send" aria-label="Send message">
@@ -1635,6 +1686,20 @@
                     <path d="M12 19V5M5 12l7-7 7 7"/>
                   </svg>
                 </button>
+              </div>
+            </div>
+            <div class="composer-add-model" id="composerAddModel">
+              <div class="composer-add-model-head">Add custom model</div>
+              <div class="composer-add-model-row">
+                <input type="text" class="setting-input" id="composerAddModelId" placeholder="Model ID (e.g. gpt-5.6-sol)" />
+              </div>
+              <div class="composer-add-model-row">
+                <input type="text" class="setting-input" id="composerAddModelName" placeholder="Display name (optional)" />
+              </div>
+              <div class="composer-add-model-row" style="display:flex;gap:6px;">
+                <input type="number" class="setting-input" id="composerAddModelCtx" placeholder="Context window" value="131072" style="flex:1;" />
+                <button class="btn btn-primary" id="composerAddModelSave" style="font-size:12px;padding:6px 10px;">Save</button>
+                <button class="btn btn-secondary" id="composerAddModelCancel" style="font-size:12px;padding:6px 10px;">Cancel</button>
               </div>
             </div>
           </div>
@@ -1994,6 +2059,7 @@
         customModelId: '',
         customModelCtx: 8192,
         systemPrompt: '',
+        quickCustomModels: [],
       };
 
       var PROMPTS = {
@@ -2235,6 +2301,110 @@
         } else {
           pill.textContent = 'Omni';
         }
+      }
+
+      function getAllModelsForComposer() {
+        var models = getAvailableModels(settings.provider);
+        var quickModels = (settings.quickCustomModels || []).filter(function(m) { return m.provider === settings.provider; });
+        return models.concat(quickModels);
+      }
+
+      function populateComposerModelSelect() {
+        var sel = $('composerModelSelect');
+        if (!sel) return;
+        sel.innerHTML = '';
+        var models = getAllModelsForComposer();
+        var currentModel = settings.model === '__custom__' ? settings.customModelId : settings.model;
+        var found = false;
+        for (var i = 0; i < models.length; i++) {
+          var opt = document.createElement('option');
+          opt.value = models[i].id;
+          opt.textContent = models[i].name || models[i].id;
+          if (models[i].id === currentModel) { opt.selected = true; found = true; }
+          sel.appendChild(opt);
+        }
+        if (!found && models.length) { sel.value = models[0].id; }
+        var sep = document.createElement('option');
+        sep.disabled = true;
+        sep.textContent = '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500';
+        sel.appendChild(sep);
+        var addOpt = document.createElement('option');
+        addOpt.value = '__add__';
+        addOpt.textContent = '+ Add model...';
+        sel.appendChild(addOpt);
+        if (!found && !models.length) sel.value = '__add__';
+      }
+
+      function applyComposerModelChange() {
+        var sel = $('composerModelSelect');
+        if (!sel) return;
+        var val = sel.value;
+        if (val === '__add__') {
+          $('composerAddModel').classList.add('visible');
+          $('composerAddModelId').focus();
+          sel.value = settings.model === '__custom__' ? settings.customModelId : settings.model;
+          return;
+        }
+        settings.model = val;
+        settings.customModelId = '';
+        var availModels = getAvailableModels(settings.provider);
+        var inPreset = false;
+        for (var i = 0; i < availModels.length; i++) {
+          if (availModels[i].id === val) { inPreset = true; break; }
+        }
+        if (!inPreset) {
+          var quickModels = settings.quickCustomModels || [];
+          for (var j = 0; j < quickModels.length; j++) {
+            if (quickModels[j].id === val && quickModels[j].provider === settings.provider) {
+              settings.customModelCtx = quickModels[j].ctx;
+              break;
+            }
+          }
+        }
+        saveSettings();
+        updateModelPill();
+        updateMetrics(null);
+        var info = $('modelContextInfo');
+        if (info) {
+          var cfg = getActiveModelConfig();
+          if (cfg) info.textContent = (getProviderConfig(settings.provider).name) + ' context window: ' + cfg.ctx.toLocaleString() + ' tokens';
+        }
+      }
+
+      function hideComposerAddModel() {
+        $('composerAddModel').classList.remove('visible');
+        $('composerAddModelId').value = '';
+        $('composerAddModelName').value = '';
+        $('composerAddModelCtx').value = '131072';
+      }
+
+      function saveQuickCustomModel() {
+        var id = $('composerAddModelId').value.trim();
+        if (!id) return;
+        var name = $('composerAddModelName').value.trim() || id;
+        var ctx = parseInt($('composerAddModelCtx').value, 10) || 131072;
+        if (!settings.quickCustomModels) settings.quickCustomModels = [];
+        var exists = false;
+        for (var i = 0; i < settings.quickCustomModels.length; i++) {
+          if (settings.quickCustomModels[i].id === id && settings.quickCustomModels[i].provider === settings.provider) {
+            settings.quickCustomModels[i].name = name;
+            settings.quickCustomModels[i].ctx = ctx;
+            exists = true;
+            break;
+          }
+        }
+        if (!exists) {
+          settings.quickCustomModels.push({ provider: settings.provider, id: id, name: name, ctx: ctx });
+        }
+        settings.model = id;
+        settings.customModelId = id;
+        settings.customModelCtx = ctx;
+        saveSettings();
+        populateComposerModelSelect();
+        updateModelPill();
+        updateMetrics(null);
+        showToast('Model added: ' + name, 'info');
+        hideComposerAddModel();
       }
 
       function escapeHtml(str) {
@@ -3079,6 +3249,7 @@
         toggleCustomSection();
         updateProviderPlaceholder();
         updateProviderURLInfo();
+        populateComposerModelSelect();
       });
 
       $('settingModel').addEventListener('change', function(e) {
@@ -3173,6 +3344,12 @@
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isStreaming) sendMessage(); }
       });
 
+      $('composerModelSelect').addEventListener('change', applyComposerModelChange);
+      $('composerModelSelect').addEventListener('click', function() { if (!getAllModelsForComposer().length) { populateComposerModelSelect(); } });
+      $('composerAddModelSave').addEventListener('click', saveQuickCustomModel);
+      $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
+      $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });
+
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape' && settingsModal.classList.contains('open')) { closeSettings(); }
         if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); toggleIncognito(); }
@@ -3198,6 +3375,7 @@
         updateSendBtn();
         updateModelPill();
         updateComposerNote();
+        populateComposerModelSelect();
         composerInput.focus();
       }
 

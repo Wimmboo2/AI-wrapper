@@ -1659,6 +1659,7 @@
           <label class="setting-label" for="settingEndpoint">API Endpoint</label>
           <p class="setting-desc">URL of your Cloudflare Worker or compatible proxy.</p>
           <input type="url" class="setting-input setting-input-mono" id="settingEndpoint" placeholder="https://omni-proxy.workers.dev" autocomplete="off" />
+          <div class="model-info" id="providerURLInfo"></div>
         </div>
 
         <div class="setting-group">
@@ -2859,6 +2860,7 @@
         toggleCustomSection();
         updateModelPill();
         updateProviderPlaceholder();
+        updateProviderURLInfo();
       }
 
       function toggleCustomSection() {
@@ -2871,6 +2873,16 @@
         var input = $('settingApiKey');
         if (cfg && cfg.apiKeyPlaceholder) { input.placeholder = cfg.apiKeyPlaceholder; }
         else { input.placeholder = 'Enter API key...'; }
+      }
+
+      function updateProviderURLInfo() {
+        var info = $('providerURLInfo');
+        var cfg = getProviderConfig(settings.provider);
+        if (cfg && cfg.defaultEndpoint) {
+          info.textContent = cfg.name + ' API: ' + cfg.defaultEndpoint;
+        } else {
+          info.textContent = '';
+        }
       }
 
       function openSettings() {
@@ -3174,14 +3186,10 @@
         settings.provider = e.target.value;
         var models = getAvailableModels(settings.provider);
         settings.model = models.length ? models[0].id : '';
-        var cfg = getProviderConfig(settings.provider);
-        if (cfg && cfg.defaultEndpoint) {
-          $('settingEndpoint').value = cfg.defaultEndpoint;
-          settings.apiEndpoint = cfg.defaultEndpoint;
-        }
         populateModelDropdown();
         toggleCustomSection();
         updateProviderPlaceholder();
+        updateProviderURLInfo();
       });
 
       $('settingModel').addEventListener('change', function(e) {

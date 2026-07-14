@@ -6,7 +6,7 @@ const PROVIDER_URLS = {
   openai: 'https://api.openai.com/v1/chat/completions',
   cerebras: 'https://api.cerebras.ai/v1/chat/completions',
   nvidia: 'https://integrate.api.nvidia.com/v1/chat/completions',
-  mistral: 'https://api.mistral.ai/v1/chat/completions',
+  moonshot: 'https://api.moonshot.ai/v1/chat/completions',
   groq: 'https://api.groq.com/openai/v1/chat/completions',
   together: 'https://api.together.xyz/v1/chat/completions',
   deepseek: 'https://api.deepseek.com/chat/completions',
@@ -383,8 +383,8 @@ export default {
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
-          case 'mistral': {
-            const url = PROVIDER_URLS.mistral;
+          case 'moonshot': {
+            const url = PROVIDER_URLS.moonshot;
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;

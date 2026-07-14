@@ -1611,11 +1611,12 @@
             ></textarea>
             <div class="composer-footer">
               <div class="composer-left">
-                <button class="composer-icon-btn" type="button" title="Add" aria-label="Add" tabindex="-1">
+                <button class="composer-icon-btn" type="button" title="Attach file" aria-label="Attach file" id="attachBtn">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 5v14M5 12h14"/>
                   </svg>
                 </button>
+                <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
               </div>
               <div class="composer-right">
 <button class="send-btn" id="sendBtn" disabled title="Send" aria-label="Send message">
@@ -1687,6 +1688,13 @@
           <p class="setting-desc">Model selection. Context window is shown below.</p>
           <select class="setting-select" id="settingModel"></select>
           <div class="model-info" id="modelContextInfo"></div>
+          <div class="custom-model-fields" id="customModelFields" style="display:none;margin-top:8px;">
+            <input type="text" class="setting-input setting-input-mono" id="settingCustomModelId" placeholder="Model ID (e.g. gpt-4o)" autocomplete="off" style="margin-bottom:6px;" />
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input type="number" class="setting-input" id="settingCustomModelCtx" placeholder="Context window" min="1" value="8192" style="flex:1;" />
+              <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">tokens</span>
+            </div>
+          </div>
         </div>
 
         <div class="custom-provider-section" id="customSection">
@@ -1846,6 +1854,7 @@
             { id: 'llama-3.1-70b', name: 'Llama 3.1 70B', ctx: 8192 },
             { id: 'llama-3.1-8b', name: 'Llama 3.1 8B', ctx: 8192 },
             { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 (Llama 70B)', ctx: 131072 },
+            { id: 'gemma-4-31b-it', name: 'Gemma 4 31B', ctx: 131072 },
             { id: 'mistral-7b-v0.1', name: 'Mistral 7B v0.1', ctx: 4096 },
           ]
         },
@@ -2070,6 +2079,8 @@
         thinking: true,
         customBaseURL: '',
         customModels: [],
+        customModelId: '',
+        customModelCtx: 8192,
       };
 
       var PROMPTS = {
@@ -2166,6 +2177,9 @@
       }
 
       function getActiveModelConfig() {
+        if (settings.model === '__custom__') {
+          return { id: settings.customModelId || '__custom__', name: 'Custom', ctx: settings.customModelCtx || 8192 };
+        }
         var models = getAvailableModels(settings.provider);
         for (var i = 0; i < models.length; i++) {
           if (models[i].id === settings.model) return models[i];
@@ -2220,6 +2234,17 @@
           chat.title = deriveTitle(firstMessage);
           if (!chat.incognito) persistChats();
           renderChatList();
+        }
+      }
+
+      function updateComposerNote() {
+        if (incognito) return;
+        if (!settings.apiKey || !settings.apiEndpoint) {
+          composerNote.textContent = 'Open Settings to add your API key and endpoint.';
+          composerNote.style.color = 'var(--accent)';
+        } else {
+          composerNote.textContent = 'Omni can make mistakes. Check important info.';
+          composerNote.style.color = '';
         }
       }
 
@@ -2287,7 +2312,11 @@
         var providerCfg = getProviderConfig(settings.provider);
         var modelCfg = getActiveModelConfig();
         if (providerCfg && modelCfg) {
-          pill.textContent = providerCfg.name + ' \u00b7 ' + modelCfg.name;
+          if (settings.model === '__custom__') {
+            pill.textContent = providerCfg.name + ' \u00b7 ' + (settings.customModelId || 'Custom');
+          } else {
+            pill.textContent = providerCfg.name + ' \u00b7 ' + modelCfg.name;
+          }
         } else if (providerCfg) {
           pill.textContent = providerCfg.name;
         } else {
@@ -2705,8 +2734,24 @@
           if (models[i].id === selectedId) { opt.selected = true; found = true; }
           sel.appendChild(opt);
         }
+        var customOpt = document.createElement('option');
+        customOpt.value = '__custom__';
+        customOpt.textContent = '\u2500\u2500\u2500 Custom model \u2500\u2500\u2500';
+        if (selectedId === '__custom__') { customOpt.selected = true; found = true; }
+        sel.appendChild(customOpt);
         if (!found && models.length) { sel.value = models[0].id; settings.model = models[0].id; }
+        toggleCustomModelFields();
         updateModelContextInfo();
+      }
+
+      function toggleCustomModelFields() {
+        var fields = $('customModelFields');
+        var isCustom = settings.model === '__custom__';
+        fields.style.display = isCustom ? 'block' : 'none';
+        if (isCustom) {
+          $('settingCustomModelId').value = settings.customModelId || '';
+          $('settingCustomModelCtx').value = settings.customModelCtx || 8192;
+        }
       }
 
       function formatContext(n) {
@@ -2717,6 +2762,11 @@
 
       function updateModelContextInfo() {
         var info = $('modelContextInfo');
+        if (settings.model === '__custom__') {
+          var ctx = settings.customModelCtx || 8192;
+          info.textContent = 'Custom model \u00b7 ' + ctx.toLocaleString() + ' tokens';
+          return;
+        }
         var m = getActiveModelConfig();
         if (!m) { info.textContent = ''; return; }
         var cfg = getProviderConfig(settings.provider);
@@ -2803,10 +2853,15 @@
         settings.maxTokens = Number($('settingMaxTokens').value);
         settings.thinking = $('settingThinking').checked;
         settings.customBaseURL = $('settingCustomURL').value.trim();
+        if (settings.model === '__custom__') {
+          settings.customModelId = $('settingCustomModelId').value.trim();
+          settings.customModelCtx = parseInt($('settingCustomModelCtx').value, 10) || 8192;
+        }
         saveSettings();
         settingsModal.classList.remove('open');
         setIncognitoUI(incognito);
         updateModelPill();
+        updateComposerNote();
         showToast('Settings saved', 'info');
       }
 
@@ -2860,9 +2915,10 @@
           history.push({ role: 'user', content: text });
         }
 
+        var actualModel = settings.model === '__custom__' ? settings.customModelId : settings.model;
         var requestBody = {
           provider: settings.provider,
-          model: settings.model,
+          model: actualModel,
           apiKey: settings.apiKey,
           messages: history,
           temperature: settings.temperature,
@@ -3086,6 +3142,7 @@
 
       $('settingModel').addEventListener('change', function(e) {
         settings.model = e.target.value;
+        toggleCustomModelFields();
         updateModelContextInfo();
       });
 
@@ -3110,6 +3167,33 @@
       });
 
       $('metricsToggle').addEventListener('click', function() { metricsRow.classList.toggle('open'); });
+
+      $('attachBtn').addEventListener('click', function() { $('fileInput').click(); });
+      $('fileInput').addEventListener('change', function(e) {
+        var files = e.target.files;
+        if (!files || !files.length) return;
+        var reader = new FileReader();
+        var idx = 0;
+        function readNext() {
+          if (idx >= files.length) { $('fileInput').value = ''; return; }
+          var file = files[idx];
+          if (file.type.startsWith('image/')) {
+            composerInput.value += (composerInput.value ? '\n' : '') + '[Image: ' + file.name + ']';
+            composerInput.value += '\n';
+            idx++; readNext();
+          } else {
+            reader.onload = function(ev) {
+              var text = ev.target.result;
+              if (text.length > 8000) text = text.slice(0, 8000) + '\n... [truncated]';
+              composerInput.value += (composerInput.value ? '\n\n' : '') + '[File: ' + file.name + ']\n' + text;
+              idx++; readNext();
+              autoResize(); updateSendBtn();
+            };
+            reader.readAsText(file);
+          }
+        }
+        readNext();
+      });
 
       sendBtn.addEventListener('click', function() { if (isStreaming) stopGeneration(); else sendMessage(); });
 
@@ -3143,6 +3227,7 @@
         syncSettingsUI();
         updateSendBtn();
         updateModelPill();
+        updateComposerNote();
         composerInput.focus();
       }
 

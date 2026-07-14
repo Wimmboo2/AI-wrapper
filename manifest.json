@@ -1,0 +1,18 @@
+{
+  "name": "Omni",
+  "short_name": "Omni",
+  "description": "AI Chat Wrapper — chat with multiple AI models from one UI",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1f1f1f",
+  "theme_color": "#1f1f1f",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1268,6 +1268,7 @@
 
     .setting-input {
       width: 100%;
+      max-width: 100%;
       padding: 10px 12px;
       border-radius: 10px;
       border: 1px solid var(--border-soft);
@@ -1277,6 +1278,16 @@
       font-family: var(--font);
       outline: none;
       transition: border-color 0.15s;
+      box-sizing: border-box;
+    }
+
+    textarea.setting-input {
+      resize: vertical;
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 58px;
+      max-height: 140px;
+      word-wrap: break-word;
     }
 
     .setting-input:focus { border-color: var(--border-strong); }
@@ -1720,7 +1731,7 @@
         <div class="setting-group">
           <label class="setting-label" for="settingSystemPrompt">Custom Instructions</label>
           <p class="setting-desc">System prompt prepended to every message. Leave empty for none.</p>
-          <textarea class="setting-input setting-input-mono" id="settingSystemPrompt" placeholder="You are a helpful assistant..." rows="3" style="resize:vertical;min-height:60px;"></textarea>
+          <textarea class="setting-input setting-input-mono" id="settingSystemPrompt" placeholder="You are a helpful assistant..." rows="3"></textarea>
         </div>
 
         <div class="setting-group">

@@ -1763,6 +1763,7 @@
         openai: {
           name: 'OpenAI',
           apiKeyPlaceholder: 'sk-proj-...',
+          defaultEndpoint: 'https://api.openai.com/v1',
           models: [
             { id: 'gpt-4.1', name: 'GPT-4.1', ctx: 1048576 },
             { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', ctx: 1048576 },
@@ -1804,6 +1805,7 @@
         anthropic: {
           name: 'Anthropic',
           apiKeyPlaceholder: 'sk-ant-api03-...',
+          defaultEndpoint: 'https://api.anthropic.com/v1',
           models: [
             { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', ctx: 200000 },
             { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', ctx: 200000 },
@@ -1818,6 +1820,7 @@
         google: {
           name: 'Google AI Studio',
           apiKeyPlaceholder: 'AIzaSy...',
+          defaultEndpoint: 'https://generativelanguage.googleapis.com/v1beta',
           models: [
             { id: 'gemini-2.5-pro-exp-03-25', name: 'Gemini 2.5 Pro', ctx: 1048576 },
             { id: 'gemini-2.5-flash-preview-04-17', name: 'Gemini 2.5 Flash', ctx: 1048576 },
@@ -1849,6 +1852,7 @@
         cerebras: {
           name: 'Cerebras',
           apiKeyPlaceholder: 'csk-...',
+          defaultEndpoint: 'https://api.cerebras.ai/v1',
           models: [
             { id: 'llama3.3-70b', name: 'Llama 3.3 70B', ctx: 8192 },
             { id: 'llama-3.1-70b', name: 'Llama 3.1 70B', ctx: 8192 },
@@ -1861,6 +1865,7 @@
         nvidia: {
           name: 'NVIDIA NIM',
           apiKeyPlaceholder: 'nvapi-...',
+          defaultEndpoint: 'https://integrate.api.nvidia.com/v1',
           models: [
             { id: 'nvidia/llama-3.1-nemotron-70b-instruct', name: 'Nemotron 70B', ctx: 131072 },
             { id: 'nvidia/llama-3.1-nemotron-51b-instruct', name: 'Nemotron 51B', ctx: 131072 },
@@ -1924,6 +1929,7 @@
         mistral: {
           name: 'Mistral',
           apiKeyPlaceholder: 'Enter Mistral API key...',
+          defaultEndpoint: 'https://api.mistral.ai/v1',
           models: [
             { id: 'mistral-large-latest', name: 'Mistral Large', ctx: 128000 },
             { id: 'pixtral-large-latest', name: 'Pixtral Large', ctx: 128000 },
@@ -1940,6 +1946,7 @@
         groq: {
           name: 'Groq',
           apiKeyPlaceholder: 'gsk_...',
+          defaultEndpoint: 'https://api.groq.com/openai/v1',
           models: [
             { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', ctx: 131072 },
             { id: 'llama-3.3-70b-specdec', name: 'Llama 3.3 70B SpecDec', ctx: 8192 },
@@ -1960,6 +1967,7 @@
         together: {
           name: 'Together AI',
           apiKeyPlaceholder: 'Enter Together API key...',
+          defaultEndpoint: 'https://api.together.xyz/v1',
           models: [
             { id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', name: 'Llama 3.3 70B Turbo', ctx: 131072 },
             { id: 'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo', name: 'Llama 3.1 405B Turbo', ctx: 131072 },
@@ -2014,14 +2022,18 @@
         deepseek: {
           name: 'DeepSeek',
           apiKeyPlaceholder: 'sk-...',
+          defaultEndpoint: 'https://api.deepseek.com',
           models: [
-            { id: 'deepseek-chat', name: 'DeepSeek-V3', ctx: 131072 },
-            { id: 'deepseek-reasoner', name: 'DeepSeek-R1', ctx: 131072 },
+            { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', ctx: 1048576 },
+            { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', ctx: 1048576 },
+            { id: 'deepseek-chat', name: 'DeepSeek-V3 (legacy)', ctx: 131072 },
+            { id: 'deepseek-reasoner', name: 'DeepSeek-R1 (legacy)', ctx: 131072 },
           ]
         },
         xai: {
           name: 'xAI Grok',
           apiKeyPlaceholder: 'xai-...',
+          defaultEndpoint: 'https://api.x.ai/v1',
           models: [
             { id: 'grok-2-latest', name: 'Grok 2', ctx: 131072 },
             { id: 'grok-2-vision-latest', name: 'Grok 2 Vision', ctx: 131072 },
@@ -2031,6 +2043,7 @@
         openrouter: {
           name: 'OpenRouter',
           apiKeyPlaceholder: 'sk-or-...',
+          defaultEndpoint: 'https://openrouter.ai/api/v1',
           models: [
             { id: 'openai/gpt-4.1', name: 'GPT-4.1', ctx: 1048576 },
             { id: 'openai/gpt-4o', name: 'GPT-4o', ctx: 128000 },
@@ -3135,6 +3148,11 @@
         settings.provider = e.target.value;
         var models = getAvailableModels(settings.provider);
         settings.model = models.length ? models[0].id : '';
+        var cfg = getProviderConfig(settings.provider);
+        if (cfg && cfg.defaultEndpoint) {
+          $('settingEndpoint').value = cfg.defaultEndpoint;
+          settings.apiEndpoint = cfg.defaultEndpoint;
+        }
         populateModelDropdown();
         toggleCustomSection();
         updateProviderPlaceholder();

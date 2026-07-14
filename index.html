@@ -1715,6 +1715,14 @@
           </div>
         </div>
 
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="settingSystemPrompt">Custom Instructions</label>
+          <p class="setting-desc">System prompt prepended to every message. Leave empty for none.</p>
+          <textarea class="setting-input setting-input-mono" id="settingSystemPrompt" placeholder="You are a helpful assistant..." rows="3" style="resize:vertical;min-height:60px;"></textarea>
+        </div>
+
         <div class="setting-group">
           <div class="setting-label-row">
             <label class="setting-label" for="settingTemp">Temperature</label>
@@ -2094,6 +2102,7 @@
         customModels: [],
         customModelId: '',
         customModelCtx: 8192,
+        systemPrompt: '',
       };
 
       var PROMPTS = {
@@ -2834,6 +2843,7 @@
         $('maxTokensValue').textContent = Number(settings.maxTokens).toLocaleString();
         $('settingThinking').checked = settings.thinking;
         $('settingCustomURL').value = settings.customBaseURL || '';
+        $('settingSystemPrompt').value = settings.systemPrompt || '';
         renderCustomModels();
         toggleCustomSection();
         updateModelPill();
@@ -2866,6 +2876,7 @@
         settings.maxTokens = Number($('settingMaxTokens').value);
         settings.thinking = $('settingThinking').checked;
         settings.customBaseURL = $('settingCustomURL').value.trim();
+        settings.systemPrompt = $('settingSystemPrompt').value.trim();
         if (settings.model === '__custom__') {
           settings.customModelId = $('settingCustomModelId').value.trim();
           settings.customModelCtx = parseInt($('settingCustomModelCtx').value, 10) || 8192;
@@ -2929,11 +2940,15 @@
         }
 
         var actualModel = settings.model === '__custom__' ? settings.customModelId : settings.model;
+        var messages = history;
+        if (settings.systemPrompt) {
+          messages = [{ role: 'system', content: settings.systemPrompt }].concat(messages);
+        }
         var requestBody = {
           provider: settings.provider,
           model: actualModel,
           apiKey: settings.apiKey,
-          messages: history,
+          messages: messages,
           temperature: settings.temperature,
           max_tokens: settings.maxTokens,
           stream: true,

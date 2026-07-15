@@ -52,6 +52,22 @@ function buildOpenAIRequest(model, messages, temperature, maxTokens) {
   return body;
 }
 
+function translateToAnthropicContent(content) {
+  if (typeof content === 'string' || !content) return content;
+  if (!Array.isArray(content)) return String(content);
+  return content.map((part) => {
+    if (part.type === 'image_url' && part.image_url) {
+      const url = part.image_url.url || '';
+      const base64Match = url.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (base64Match) {
+        return { type: 'image', source: { type: 'base64', media_type: base64Match[1], data: base64Match[2] } };
+      }
+      return { type: 'image', source: { type: 'url', url: url } };
+    }
+    return { type: 'text', text: typeof part.text === 'string' ? part.text : '' };
+  });
+}
+
 function buildAnthropicRequest(model, messages, temperature, maxTokens, thinking) {
   const systemMessages = messages.filter((m) => m.role === 'system').map((m) => m.content);
   const chatMessages = messages.filter((m) => m.role !== 'system');
@@ -60,7 +76,7 @@ function buildAnthropicRequest(model, messages, temperature, maxTokens, thinking
     model,
     messages: chatMessages.map((m) => ({
       role: m.role,
-      content: m.content,
+      content: translateToAnthropicContent(m.content),
     })),
     max_tokens: maxTokens,
     temperature,
@@ -76,13 +92,33 @@ function buildAnthropicRequest(model, messages, temperature, maxTokens, thinking
   return body;
 }
 
+function translateToGoogleParts(content) {
+  if (typeof content === 'string' || !content) return [{ text: content || '' }];
+  if (!Array.isArray(content)) return [{ text: String(content) }];
+  var parts = [];
+  for (const part of content) {
+    if (part.type === 'image_url' && part.image_url) {
+      const url = part.image_url.url || '';
+      const base64Match = url.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (base64Match) {
+        parts.push({ inline_data: { mime_type: base64Match[1], data: base64Match[2] } });
+      } else {
+        parts.push({ file_data: { file_uri: url, mime_type: 'image/jpeg' } });
+      }
+    } else if (part.text) {
+      parts.push({ text: part.text });
+    }
+  }
+  return parts.length ? parts : [{ text: '' }];
+}
+
 function buildGoogleRequest(model, messages, temperature, maxTokens, thinking) {
   const systemMsg = messages.filter((m) => m.role === 'system');
   const chatMsg = messages.filter((m) => m.role !== 'system');
 
   const contents = chatMsg.map((m) => ({
     role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
+    parts: translateToGoogleParts(m.content),
   }));
 
   const body = {
@@ -343,20 +379,42 @@ export default {
       return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
     }
 
-    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL } = body;
+    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL, fetch_url } = body;
 
     if (!provider) return jsonResponse({ error: { message: 'Missing provider' } }, 400);
     if (!model) return jsonResponse({ error: { message: 'Missing model' } }, 400);
     if (!apiKey) return jsonResponse({ error: { message: 'Missing API key' } }, 400);
     if (!messages || !messages.length) return jsonResponse({ error: { message: 'Missing messages' } }, 400);
 
+    var fetchedContent = '';
+    if (fetch_url) {
+      try {
+        var fetchRes = await fetch(fetch_url, { headers: { 'User-Agent': 'Omni/1.0' } });
+        var html = await fetchRes.text();
+        var text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+          .replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ')
+          .trim();
+        if (text.length > 12000) text = text.slice(0, 12000) + '... [truncated]';
+        fetchedContent = 'Content from ' + fetch_url + ':\n\n' + text;
+      } catch (e) {
+        fetchedContent = 'Failed to fetch ' + fetch_url + ': ' + (e.message || 'Unknown error');
+      }
+    }
+
     const temp = typeof temperature === 'number' ? temperature : 0.7;
     const maxOut = typeof max_tokens === 'number' ? max_tokens : 2048;
     const useThinking = !!thinking;
-    const safeMessages = messages.map((m) => ({
+    var safeMessages = messages.map((m) => ({
       role: m.role,
       content: m.content,
     }));
+    if (fetchedContent) {
+      safeMessages.unshift({ role: 'system', content: fetchedContent });
+    }
 
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();

@@ -937,6 +937,45 @@
     .composer-add-model-row:last-child { margin-bottom: 0; }
     .composer-add-model-row .setting-input { font-size: 12px; padding: 6px 10px; }
 
+    .pending-files-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 0 2px 6px;
+    }
+
+    .pending-files-list:empty { display: none; }
+
+    .pending-file-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 450;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pending-file-tag svg { width: 12px; height: 12px; opacity: 0.6; flex-shrink: 0; }
+
+    .pending-file-remove {
+      cursor: pointer;
+      opacity: 0.5;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+      transition: opacity 0.12s, color 0.12s;
+      flex-shrink: 0;
+    }
+
+    .pending-file-remove:hover { opacity: 1; color: var(--danger); }
+
     .send-btn {
       width: 30px;
       height: 30px;
@@ -1687,6 +1726,7 @@
               placeholder="How can I help you today?"
               autocomplete="off"
             ></textarea>
+            <div id="pendingFilesList" class="pending-files-list"></div>
             <div class="composer-footer">
               <div class="composer-left">
                 <button class="composer-icon-btn" type="button" title="Attach file" aria-label="Attach file" id="attachBtn">
@@ -1695,6 +1735,9 @@
                   </svg>
                 </button>
                 <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
+                <button class="composer-icon-btn" type="button" title="Fetch URL" aria-label="Fetch URL" id="fetchUrlBtn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                </button>
                 <select class="composer-model-select" id="composerModelSelect" title="Quick model switch" aria-label="Switch model"></select>
               </div>
               <div class="composer-right">
@@ -1835,8 +1878,16 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="resetSettingsBtn">Reset</button>
         <button class="btn btn-primary" id="saveSettingsBtn">Done</button>
-      </div>
-    </div>
+            </div>
+            <div class="composer-add-model" id="composerFetchURL">
+              <div class="composer-add-model-head">Fetch URL content</div>
+              <div class="composer-add-model-row" style="display:flex;gap:6px;">
+                <input type="url" class="setting-input" id="composerFetchUrlInput" placeholder="https://example.com" style="flex:1;" />
+                <button class="btn btn-primary" id="composerFetchUrlGo" style="font-size:12px;padding:6px 10px;">Fetch</button>
+                <button class="btn btn-secondary" id="composerFetchUrlCancel" style="font-size:12px;padding:6px 10px;">Cancel</button>
+              </div>
+            </div>
+          </div>
   </div>
 
   <div class="toast" id="toast" role="alert">
@@ -2088,6 +2139,7 @@
         eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
         eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>',
         x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+        retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
       };
 
       var thinkingAnimTimer = null;
@@ -2556,7 +2608,7 @@
           }).catch(function() { showToast('Couldn\u2019t copy to clipboard'); });
         });
         actions.appendChild(copyBtn);
-        if (msg.role === 'user' || msg.role === 'assistant') {
+        if (msg.role === 'user') {
           var editBtn = document.createElement('button');
           editBtn.type = 'button';
           editBtn.className = 'msg-action';
@@ -2566,7 +2618,35 @@
           editBtn.addEventListener('click', function() { beginEditMessage(msgIndex, msg.role); });
           actions.appendChild(editBtn);
         }
+        if (msg.role === 'assistant') {
+          var retryBtn = document.createElement('button');
+          retryBtn.type = 'button';
+          retryBtn.className = 'msg-action';
+          retryBtn.title = 'Regenerate';
+          retryBtn.setAttribute('aria-label', 'Regenerate response');
+          retryBtn.innerHTML = ICONS.retry;
+          retryBtn.addEventListener('click', function() { regenerateMessage(msgIndex); });
+          actions.appendChild(retryBtn);
+        }
+
         return actions;
+      }
+
+      function regenerateMessage(msgIndex) {
+        if (isStreaming) return;
+        var chat = getActiveChat();
+        if (!chat || !chat.messages[msgIndex]) return;
+        chat.messages = chat.messages.slice(0, msgIndex);
+        chat.metrics = null;
+        var last = chat.messages[chat.messages.length - 1];
+        if (!last || last.role !== 'user') { renderMessages(); placeComposer(); return; }
+        if (!chat.incognito) persistChats();
+        composerInput.value = last.content || '';
+        autoResize();
+        updateSendBtn();
+        renderMessages();
+        placeComposer();
+        sendMessage();
       }
 
       function beginEditMessage(msgIndex, role) {
@@ -2897,11 +2977,31 @@
         var chat = getActiveChat();
         if (!chat) { chat = createChat({ asIncognito: incognito }); }
 
-        chat.messages.push({ role: 'user', content: text });
+        var userContent = text;
+        var displayContent = text;
+        if (pendingFiles.length) {
+          var parts = [];
+          if (text) parts.push({ type: 'text', text: text });
+          var fileNames = [];
+          for (var fi = 0; fi < pendingFiles.length; fi++) {
+            var f = pendingFiles[fi];
+            fileNames.push(f.name);
+            if (f.type.startsWith('image/')) {
+              parts.push({ type: 'image_url', image_url: { url: f.data, detail: 'auto' } });
+            } else {
+              parts.push({ type: 'text', text: '[File: ' + f.name + ']\n' + f.data });
+            }
+          }
+          userContent = parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts;
+          displayContent = text ? text + '\n\n[Attached: ' + fileNames.join(', ') + ']' : '[Attached: ' + fileNames.join(', ') + ']';
+        }
+
+        chat.messages.push({ role: 'user', content: displayContent, _apiContent: userContent });
         updateChatTitle(chat, text);
         if (!chat.incognito) persistChats();
 
         composerInput.value = '';
+        clearPendingFiles();
         autoResize();
         updateSendBtn();
 
@@ -2909,7 +3009,7 @@
         if (messagesEl.querySelector('.empty-state')) { messagesEl.innerHTML = ''; }
         if (composerShell.parentElement !== composerArea) { composerArea.appendChild(composerShell); composerNote.style.display = ''; }
 
-        messagesEl.appendChild(buildMessageEl({ role: 'user', content: text }, false, chat.messages.length - 1));
+        messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent }, false, chat.messages.length - 1));
 
         var assistantMsg = { role: 'assistant', content: '', thinking: '', thinkingComplete: false };
         chat.messages.push(assistantMsg);
@@ -2925,10 +3025,13 @@
         var history = chat.messages
           .filter(function(m) { return m.role === 'user' || (m.role === 'assistant' && m.content); })
           .slice(0, -1)
-          .map(function(m) { return { role: m.role, content: m.content }; });
+          .map(function(m) { return { role: m.role, content: m._apiContent || m.content }; });
 
-        if (!history.length || history[history.length - 1].content !== text) {
-          history.push({ role: 'user', content: text });
+        var currentMsg = { role: 'user', content: userContent };
+        if (!history.length || history[history.length - 1].role !== 'user') {
+          history.push(currentMsg);
+        } else {
+          history[history.length - 1] = currentMsg;
         }
 
         var actualModel = settings.model === '__custom__' ? settings.customModelId : settings.model;
@@ -2949,6 +3052,11 @@
 
         if (settings.provider === 'custom') {
           requestBody.baseURL = settings.customBaseURL || '';
+        }
+
+        if (pendingFetchUrl) {
+          requestBody.fetch_url = pendingFetchUrl;
+          pendingFetchUrl = null;
         }
 
         var streamStart = performance.now();
@@ -3201,6 +3309,30 @@
 
       $('metricsToggle').addEventListener('click', function() { metricsRow.classList.toggle('open'); });
 
+      var pendingFiles = [];
+
+      function clearPendingFiles() {
+        pendingFiles = [];
+        var previews = document.querySelectorAll('.pending-file-tag');
+        for (var i = 0; i < previews.length; i++) { previews[i].remove(); }
+      }
+
+      function addPendingFileTag(file) {
+        var tag = document.createElement('div');
+        tag.className = 'pending-file-tag';
+        var isImage = file.type.startsWith('image/');
+        tag.innerHTML = (isImage ? ICONS.check : '') + ' ' + escapeHtml(file.name) + ' <span class="pending-file-remove" title="Remove">\u00d7</span>';
+        tag.querySelector('.pending-file-remove').addEventListener('click', function(e) {
+          e.stopPropagation();
+          tag.remove();
+          for (var i = 0; i < pendingFiles.length; i++) {
+            if (pendingFiles[i].name === file.name && pendingFiles[i].size === file.size) { pendingFiles.splice(i, 1); break; }
+          }
+          updateSendBtn();
+        });
+        document.getElementById('pendingFilesList').appendChild(tag);
+      }
+
       $('attachBtn').addEventListener('click', function() { $('fileInput').click(); });
       $('fileInput').addEventListener('change', function(e) {
         var files = e.target.files;
@@ -3208,19 +3340,22 @@
         var reader = new FileReader();
         var idx = 0;
         function readNext() {
-          if (idx >= files.length) { $('fileInput').value = ''; return; }
+          if (idx >= files.length) { $('fileInput').value = ''; updateSendBtn(); return; }
           var file = files[idx];
           if (file.type.startsWith('image/')) {
-            composerInput.value += (composerInput.value ? '\n' : '') + '[Image: ' + file.name + ']';
-            composerInput.value += '\n';
-            idx++; readNext();
+            reader.onload = function(ev) {
+              pendingFiles.push({ name: file.name, type: file.type, data: ev.target.result, size: file.size });
+              addPendingFileTag(file);
+              idx++; readNext();
+            };
+            reader.readAsDataURL(file);
           } else {
             reader.onload = function(ev) {
               var text = ev.target.result;
               if (text.length > 8000) text = text.slice(0, 8000) + '\n... [truncated]';
-              composerInput.value += (composerInput.value ? '\n\n' : '') + '[File: ' + file.name + ']\n' + text;
+              pendingFiles.push({ name: file.name, type: file.type, data: text, size: file.size });
+              addPendingFileTag(file);
               idx++; readNext();
-              autoResize(); updateSendBtn();
             };
             reader.readAsText(file);
           }
@@ -3241,6 +3376,24 @@
       $('composerAddModelSave').addEventListener('click', saveQuickCustomModel);
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });
+
+      var pendingFetchUrl = null;
+
+      $('fetchUrlBtn').addEventListener('click', function() {
+        $('composerFetchURL').classList.toggle('visible');
+        if ($('composerFetchURL').classList.contains('visible')) $('composerFetchUrlInput').focus();
+      });
+      $('composerFetchUrlCancel').addEventListener('click', function() {
+        $('composerFetchURL').classList.remove('visible');
+        pendingFetchUrl = null;
+      });
+      $('composerFetchUrlGo').addEventListener('click', function() {
+        var url = $('composerFetchUrlInput').value.trim();
+        if (!url) return;
+        pendingFetchUrl = url;
+        $('composerFetchURL').classList.remove('visible');
+        showToast('URL added: ' + url, 'info');
+      });
 
       $('toastClose').addEventListener('click', dismissToast);
       toast.addEventListener('click', function(e) { if (e.target === toast) dismissToast(); });

@@ -1459,21 +1459,49 @@
       background: #2a2424;
       border: 1px solid rgba(212, 120, 120, 0.25);
       color: #e0a8a8;
-      padding: 11px 16px;
+      padding: 11px 40px 11px 16px;
       border-radius: 12px;
       font-size: 13px;
       z-index: 200;
       transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
       max-width: 90vw;
       box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: none;
     }
 
-    .toast.show { transform: translateX(-50%) translateY(0); }
+    .toast.show { 
+      transform: translateX(-50%) translateY(0);
+      pointer-events: auto;
+    }
     .toast.info {
       background: #24242a;
       border-color: rgba(155, 142, 196, 0.25);
       color: #c4bce0;
     }
+
+    .toast-text { flex: 1; }
+
+    .toast-close {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      opacity: 0.65;
+      transition: opacity 0.12s, background 0.12s;
+    }
+
+    .toast-close:hover { opacity: 1; background: rgba(0,0,0,0.15); }
+    .toast-close svg { width: 14px; height: 14px; }
 
     @media (max-width: 768px) {
       .sidebar {
@@ -1809,7 +1837,12 @@
     </div>
   </div>
 
-  <div class="toast" id="toast" role="alert"></div>
+  <div class="toast" id="toast" role="alert">
+    <span class="toast-text" id="toastText"></span>
+    <button class="toast-close" id="toastClose" aria-label="Dismiss" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
 
   <script>
     (function () {
@@ -3102,12 +3135,22 @@
       }
 
       var toastTimer = null;
-      function showToast(msg, type) {
-        toast.textContent = msg;
-        toast.classList.toggle('info', type === 'info');
-        toast.classList.add('show');
+      var toastShowing = false;
+
+      function dismissToast() {
+        toast.classList.remove('show');
+        toastShowing = false;
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(function() { toast.classList.remove('show'); }, 3600);
+        toastTimer = null;
+      }
+
+      function showToast(msg, type) {
+        $('toastText').textContent = msg;
+        toast.classList.toggle('info', type === 'info');
+        dismissToast();
+        toast.classList.add('show');
+        toastShowing = true;
+        toastTimer = setTimeout(dismissToast, 4000);
       }
 
       $('sidebarCollapseBtn').addEventListener('click', collapseSidebar);
@@ -3197,8 +3240,14 @@
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });
 
+      $('toastClose').addEventListener('click', dismissToast);
+      toast.addEventListener('click', function(e) { if (e.target === toast) dismissToast(); });
+
       document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape' && settingsModal.classList.contains('open')) { closeSettings(); }
+        if (e.key === 'Escape') {
+          if (toastShowing) { dismissToast(); return; }
+          if (settingsModal.classList.contains('open')) { closeSettings(); return; }
+        }
         if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); toggleIncognito(); }
       });
 

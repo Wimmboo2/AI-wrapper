@@ -1455,7 +1455,7 @@
       position: fixed;
       bottom: 24px;
       left: 50%;
-      transform: translateX(-50%) translateY(80px);
+      transform: translateX(-50%) translateY(16px);
       background: #2a2424;
       border: 1px solid rgba(212, 120, 120, 0.25);
       color: #e0a8a8;
@@ -1463,7 +1463,8 @@
       border-radius: 12px;
       font-size: 13px;
       z-index: 200;
-      transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+      opacity: 0;
+      transition: opacity 0.2s ease, transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
       max-width: 90vw;
       box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
       display: flex;
@@ -1474,6 +1475,7 @@
 
     .toast.show { 
       transform: translateX(-50%) translateY(0);
+      opacity: 1;
       pointer-events: auto;
     }
     .toast.info {
@@ -3147,7 +3149,7 @@
       function showToast(msg, type) {
         $('toastText').textContent = msg;
         toast.classList.toggle('info', type === 'info');
-        dismissToast();
+        clearTimeout(toastTimer);
         toast.classList.add('show');
         toastShowing = true;
         toastTimer = setTimeout(dismissToast, 4000);

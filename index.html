@@ -1132,6 +1132,8 @@
       max-width: 440px;
       max-height: 90vh;
       overflow-y: auto;
+      overflow-x: hidden;
+      position: relative;
       box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
       transform: translateY(10px) scale(0.98);
       transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
@@ -1760,22 +1762,6 @@
           </div>
         </div>
 
-        <div class="setting-group">
-          <label class="setting-label" for="settingModel">Model</label>
-          <p class="setting-desc">Model selection. Context window is shown below.</p>
-          <select class="setting-select" id="settingModel"></select>
-          <div class="model-info" id="modelContextInfo"></div>
-          <div class="custom-model-fields" id="customModelFields" style="display:none;margin-top:8px;">
-            <input type="text" class="setting-input setting-input-mono" id="settingCustomModelId" placeholder="Model ID (e.g. gpt-5.6-sol)" autocomplete="off" style="margin-bottom:8px;" />
-            <div class="setting-label-row" style="margin-bottom:4px;">
-              <label class="setting-label" style="font-size:12px;">Context window</label>
-              <span class="setting-value" id="customCtxValue" style="cursor:text;" title="Click to edit">8,192</span>
-            </div>
-            <input type="range" class="setting-slider" id="settingCustomModelCtx" min="256" max="2097152" step="256" value="8192" />
-            <input type="number" class="setting-input" id="settingCustomModelCtxEdit" style="display:none;margin-top:4px;" min="1" placeholder="Enter context window" />
-          </div>
-        </div>
-
         <div class="custom-provider-section" id="customSection">
           <div class="setting-group">
             <label class="setting-label" for="settingCustomURL">Base URL</label>
@@ -1792,8 +1778,6 @@
               Add model
             </button>
           </div>
-        </div>
-
         </div>
 
         <div class="setting-group">
@@ -2364,11 +2348,6 @@
         saveSettings();
         updateModelPill();
         updateMetrics(null);
-        var info = $('modelContextInfo');
-        if (info) {
-          var cfg = getActiveModelConfig();
-          if (cfg) info.textContent = (getProviderConfig(settings.provider).name) + ' context window: ' + cfg.ctx.toLocaleString() + ' tokens';
-        }
       }
 
       function hideComposerAddModel() {
@@ -2803,62 +2782,6 @@
       function collapseSidebar() { sidebarCollapsed = true; applySidebarState(); }
       function expandSidebar() { sidebarCollapsed = false; applySidebarState(); }
 
-      function populateModelDropdown() {
-        var sel = $('settingModel');
-        var info = $('modelContextInfo');
-        sel.innerHTML = '';
-        var models = getAvailableModels(settings.provider);
-        var selectedId = settings.model;
-        var found = false;
-        for (var i = 0; i < models.length; i++) {
-          var opt = document.createElement('option');
-          opt.value = models[i].id;
-          opt.textContent = models[i].name + ' (' + formatContext(models[i].ctx) + ')';
-          if (models[i].id === selectedId) { opt.selected = true; found = true; }
-          sel.appendChild(opt);
-        }
-        var customOpt = document.createElement('option');
-        customOpt.value = '__custom__';
-        customOpt.textContent = '\u2500\u2500\u2500 Custom model \u2500\u2500\u2500';
-        if (selectedId === '__custom__') { customOpt.selected = true; found = true; }
-        sel.appendChild(customOpt);
-        if (!found && models.length) { sel.value = models[0].id; settings.model = models[0].id; }
-        toggleCustomModelFields();
-        updateModelContextInfo();
-      }
-
-      function toggleCustomModelFields() {
-        var fields = $('customModelFields');
-        var isCustom = settings.model === '__custom__';
-        fields.style.display = isCustom ? 'block' : 'none';
-        if (isCustom) {
-          $('settingCustomModelId').value = settings.customModelId || '';
-          var ctx = settings.customModelCtx || 8192;
-          $('settingCustomModelCtx').value = ctx;
-          $('customCtxValue').textContent = ctx.toLocaleString();
-        }
-      }
-
-      function formatContext(n) {
-        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-        if (n >= 1000) return Math.round(n / 1000) + 'K';
-        return String(n);
-      }
-
-      function updateModelContextInfo() {
-        var info = $('modelContextInfo');
-        if (settings.model === '__custom__') {
-          var ctx = settings.customModelCtx || 8192;
-          info.textContent = 'Custom model \u00b7 ' + ctx.toLocaleString() + ' tokens';
-          return;
-        }
-        var m = getActiveModelConfig();
-        if (!m) { info.textContent = ''; return; }
-        var cfg = getProviderConfig(settings.provider);
-        var providerName = cfg ? cfg.name : settings.provider;
-        info.textContent = providerName + ' context window: ' + m.ctx.toLocaleString() + ' tokens';
-      }
-
       function renderCustomModels() {
         var list = $('customModelsList');
         list.innerHTML = '';
@@ -2899,7 +2822,6 @@
         $('settingEndpoint').value = settings.apiEndpoint || '';
         $('settingProvider').value = settings.provider || 'openai';
         $('settingApiKey').value = settings.apiKey || '';
-        populateModelDropdown();
         $('settingTemp').value = settings.temperature;
         $('tempValue').textContent = Number(settings.temperature).toFixed(2);
         $('settingMaxTokens').value = settings.maxTokens;
@@ -2945,16 +2867,11 @@
         settings.apiEndpoint = $('settingEndpoint').value.trim();
         settings.provider = $('settingProvider').value;
         settings.apiKey = $('settingApiKey').value.trim();
-        settings.model = $('settingModel').value;
         settings.temperature = Number($('settingTemp').value);
         settings.maxTokens = Number($('settingMaxTokens').value);
         settings.thinking = $('settingThinking').checked;
         settings.customBaseURL = $('settingCustomURL').value.trim();
         settings.systemPrompt = $('settingSystemPrompt').value.trim();
-        if (settings.model === '__custom__') {
-          settings.customModelId = $('settingCustomModelId').value.trim();
-          settings.customModelCtx = parseInt($('settingCustomModelCtx').value, 10) || 8192;
-        }
         saveSettings();
         settingsModal.classList.remove('open');
         setIncognitoUI(incognito);
@@ -3245,17 +3162,10 @@
         settings.provider = e.target.value;
         var models = getAvailableModels(settings.provider);
         settings.model = models.length ? models[0].id : '';
-        populateModelDropdown();
         toggleCustomSection();
         updateProviderPlaceholder();
         updateProviderURLInfo();
         populateComposerModelSelect();
-      });
-
-      $('settingModel').addEventListener('change', function(e) {
-        settings.model = e.target.value;
-        toggleCustomModelFields();
-        updateModelContextInfo();
       });
 
       $('settingTemp').addEventListener('input', function(e) { $('tempValue').textContent = Number(e.target.value).toFixed(2); });
@@ -3276,35 +3186,6 @@
 
       $('settingCustomURL').addEventListener('input', function(e) {
         settings.customBaseURL = e.target.value.trim();
-      });
-
-      $('settingCustomModelCtx').addEventListener('input', function(e) {
-        $('customCtxValue').textContent = Number(e.target.value).toLocaleString();
-      });
-
-      $('customCtxValue').addEventListener('click', function() {
-        var edit = $('settingCustomModelCtxEdit');
-        var display = $('customCtxValue');
-        var slider = $('settingCustomModelCtx');
-        edit.style.display = 'block';
-        edit.value = slider.value;
-        edit.focus();
-        display.style.display = 'none';
-      });
-
-      $('settingCustomModelCtxEdit').addEventListener('blur', function() {
-        var val = parseInt(this.value, 10);
-        if (val > 0) {
-          $('settingCustomModelCtx').value = val;
-          $('customCtxValue').textContent = val.toLocaleString();
-        }
-        this.style.display = 'none';
-        $('customCtxValue').style.display = '';
-      });
-
-      $('settingCustomModelCtxEdit').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { this.blur(); }
-        if (e.key === 'Escape') { this.style.display = 'none'; $('customCtxValue').style.display = ''; }
       });
 
       $('metricsToggle').addEventListener('click', function() { metricsRow.classList.toggle('open'); });

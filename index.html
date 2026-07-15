@@ -383,19 +383,6 @@
       min-width: 0;
     }
 
-    .model-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border-radius: 999px;
-      border: 1px solid var(--border-soft);
-      background: rgba(255,255,255,0.03);
-      color: var(--text-secondary);
-      font-size: 12.5px;
-      font-weight: 500;
-    }
-
     .incognito-banner {
       display: none;
       align-items: center;
@@ -409,7 +396,6 @@
     }
 
     body.incognito .incognito-banner { display: inline-flex; }
-    body.incognito .model-pill { display: none; }
 
     .incognito-banner svg { width: 14px; height: 14px; }
 
@@ -1586,7 +1572,6 @@
         </button>
 
         <div class="topbar-center">
-          <div class="model-pill">Omni</div>
           <div class="incognito-banner">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 9.5c2.2-2.8 4.8-4 8-4s5.8 1.2 8 4"/>
@@ -2229,7 +2214,7 @@
           composerInput.placeholder = 'How can I help you today?';
           $('recentsLabel').textContent = 'Recents';
         }
-        updateModelPill();
+
       }
 
       function enterIncognito() {
@@ -2266,25 +2251,6 @@
         renderAll();
         composerInput.focus();
         if (window.innerWidth <= 768) collapseSidebar();
-      }
-
-      function updateModelPill() {
-        if (incognito) return;
-        var pill = document.querySelector('.model-pill');
-        if (!pill) return;
-        var providerCfg = getProviderConfig(settings.provider);
-        var modelCfg = getActiveModelConfig();
-        if (providerCfg && modelCfg) {
-          if (settings.model === '__custom__') {
-            pill.textContent = providerCfg.name + ' \u00b7 ' + (settings.customModelId || 'Custom');
-          } else {
-            pill.textContent = providerCfg.name + ' \u00b7 ' + modelCfg.name;
-          }
-        } else if (providerCfg) {
-          pill.textContent = providerCfg.name;
-        } else {
-          pill.textContent = 'Omni';
-        }
       }
 
       function getAllModelsForComposer() {
@@ -2346,7 +2312,7 @@
           }
         }
         saveSettings();
-        updateModelPill();
+
         updateMetrics(null);
       }
 
@@ -2380,7 +2346,7 @@
         settings.customModelCtx = ctx;
         saveSettings();
         populateComposerModelSelect();
-        updateModelPill();
+
         updateMetrics(null);
         showToast('Model added: ' + name, 'info');
         hideComposerAddModel();
@@ -2420,7 +2386,7 @@
         renderChatList();
         renderMessages();
         placeComposer();
-        updateModelPill();
+
       }
 
       function renderChatList() {
@@ -2831,7 +2797,7 @@
         $('settingSystemPrompt').value = settings.systemPrompt || '';
         renderCustomModels();
         toggleCustomSection();
-        updateModelPill();
+
         updateProviderPlaceholder();
         updateProviderURLInfo();
       }
@@ -2875,7 +2841,7 @@
         saveSettings();
         settingsModal.classList.remove('open');
         setIncognitoUI(incognito);
-        updateModelPill();
+
         updateComposerNote();
         showToast('Settings saved', 'info');
       }
@@ -3254,7 +3220,7 @@
         renderAll();
         syncSettingsUI();
         updateSendBtn();
-        updateModelPill();
+
         updateComposerNote();
         populateComposerModelSelect();
         composerInput.focus();

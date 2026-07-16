@@ -363,7 +363,7 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders() });
     }
@@ -379,41 +379,45 @@ export default {
       return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
     }
 
-    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL, fetch_url } = body;
+    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL, web_search } = body;
 
     if (!provider) return jsonResponse({ error: { message: 'Missing provider' } }, 400);
     if (!model) return jsonResponse({ error: { message: 'Missing model' } }, 400);
     if (!apiKey) return jsonResponse({ error: { message: 'Missing API key' } }, 400);
     if (!messages || !messages.length) return jsonResponse({ error: { message: 'Missing messages' } }, 400);
 
-    var fetchedContent = '';
-    if (fetch_url) {
-      try {
-        var fetchRes = await fetch(fetch_url, { headers: { 'User-Agent': 'Omni/1.0' } });
-        var html = await fetchRes.text();
-        var text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-          .replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ')
-          .trim();
-        if (text.length > 12000) text = text.slice(0, 12000) + '... [truncated]';
-        fetchedContent = 'Content from ' + fetch_url + ':\n\n' + text;
-      } catch (e) {
-        fetchedContent = 'Failed to fetch ' + fetch_url + ': ' + (e.message || 'Unknown error');
+    var searchResults = '';
+    if (web_search) {
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+      const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
+      if (query) {
+        try {
+          const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
+          if (ddgRes.ok) {
+            const ddgData = await ddgRes.json();
+            const snippets = [];
+            const topics = ddgData.RelatedTopics || [];
+            if (ddgData.AbstractText) snippets.push('Summary: ' + ddgData.AbstractText);
+            if (ddgData.Answer) snippets.push('Answer: ' + ddgData.Answer);
+            for (const t of topics) {
+              if (t.Text) snippets.push(t.Text);
+              if (t.Topics) t.Topics.forEach((st) => { if (st.Text) snippets.push(st.Text); });
+            }
+            searchResults = 'Web search results for "' + query + '":\n\n' + snippets.slice(0, 6).join('\n');
+          }
+        } catch (_) { /* search failed, silently skip */ }
       }
     }
 
     const temp = typeof temperature === 'number' ? temperature : 0.7;
     const maxOut = typeof max_tokens === 'number' ? max_tokens : 2048;
     const useThinking = !!thinking;
-    var safeMessages = messages.map((m) => ({
+    const safeMessages = messages.map((m) => ({
       role: m.role,
       content: m.content,
     }));
-    if (fetchedContent) {
-      safeMessages.unshift({ role: 'system', content: fetchedContent });
+    if (searchResults) {
+      safeMessages.unshift({ role: 'system', content: searchResults });
     }
 
     const { readable, writable } = new TransformStream();
@@ -468,6 +472,7 @@ export default {
           case 'xai': {
             const url = PROVIDER_URLS.xai;
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            if (web_search) reqBody.search_parameters = { mode: 'on' };
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
@@ -484,6 +489,10 @@ export default {
           }
           case 'google': {
             const reqBody = buildGoogleRequest(model, safeMessages, temp, maxOut, useThinking);
+            if (web_search) {
+              if (!reqBody.tools) reqBody.tools = [{ googleSearch: {} }];
+              else reqBody.tools.push({ googleSearch: {} });
+            }
             await streamGoogle(model, apiKey, reqBody, encoder, writer);
             break;
           }

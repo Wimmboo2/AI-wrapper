@@ -146,6 +146,11 @@
       background: var(--incognito-soft);
     }
 
+    .icon-btn.active-search {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
     .nav {
       padding: 4px 10px 8px;
       display: flex;
@@ -976,6 +981,15 @@
 
     .pending-file-remove:hover { opacity: 1; color: var(--danger); }
 
+    .web-search-indicator {
+      font-size: 10px;
+      color: var(--accent);
+      padding: 1px 6px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      margin-left: 2px;
+    }
+
     .send-btn {
       width: 30px;
       height: 30px;
@@ -1735,8 +1749,8 @@
                   </svg>
                 </button>
                 <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
-                <button class="composer-icon-btn" type="button" title="Fetch URL" aria-label="Fetch URL" id="fetchUrlBtn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <button class="composer-icon-btn" type="button" title="Web search" aria-label="Toggle web search" id="webSearchBtn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 </button>
                 <select class="composer-model-select" id="composerModelSelect" title="Quick model switch" aria-label="Switch model"></select>
               </div>
@@ -1873,21 +1887,12 @@
               <span class="toggle-track"></span>
             </label>
           </div>
-        </div>
-      </div>
+    </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" id="resetSettingsBtn">Reset</button>
         <button class="btn btn-primary" id="saveSettingsBtn">Done</button>
-            </div>
-            <div class="composer-add-model" id="composerFetchURL">
-              <div class="composer-add-model-head">Fetch URL content</div>
-              <div class="composer-add-model-row" style="display:flex;gap:6px;">
-                <input type="url" class="setting-input" id="composerFetchUrlInput" placeholder="https://example.com" style="flex:1;" />
-                <button class="btn btn-primary" id="composerFetchUrlGo" style="font-size:12px;padding:6px 10px;">Fetch</button>
-                <button class="btn btn-secondary" id="composerFetchUrlCancel" style="font-size:12px;padding:6px 10px;">Cancel</button>
-              </div>
-            </div>
-          </div>
+      </div>
+    </div>
   </div>
 
   <div class="toast" id="toast" role="alert">
@@ -2140,6 +2145,7 @@
         eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>',
         x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
         retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+        search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
       };
 
       var thinkingAnimTimer = null;
@@ -3048,15 +3054,11 @@
           max_tokens: settings.maxTokens,
           stream: true,
           thinking: settings.thinking,
+          web_search: webSearch,
         };
 
         if (settings.provider === 'custom') {
           requestBody.baseURL = settings.customBaseURL || '';
-        }
-
-        if (pendingFetchUrl) {
-          requestBody.fetch_url = pendingFetchUrl;
-          pendingFetchUrl = null;
         }
 
         var streamStart = performance.now();
@@ -3310,6 +3312,26 @@
       $('metricsToggle').addEventListener('click', function() { metricsRow.classList.toggle('open'); });
 
       var pendingFiles = [];
+      var webSearch = false;
+
+      function toggleWebSearch() {
+        webSearch = !webSearch;
+        var btn = $('webSearchBtn');
+        btn.classList.toggle('active-search', webSearch);
+        btn.title = webSearch ? 'Web search: on' : 'Web search';
+        btn.setAttribute('aria-label', btn.title);
+        var existing = document.querySelector('.web-search-indicator');
+        if (webSearch) {
+          if (!existing) {
+            var tag = document.createElement('span');
+            tag.className = 'web-search-indicator';
+            tag.textContent = 'Web search on';
+            btn.parentNode.insertBefore(tag, btn.nextSibling);
+          }
+        } else {
+          if (existing) existing.remove();
+        }
+      }
 
       function clearPendingFiles() {
         pendingFiles = [];
@@ -3334,6 +3356,7 @@
       }
 
       $('attachBtn').addEventListener('click', function() { $('fileInput').click(); });
+      $('webSearchBtn').addEventListener('click', toggleWebSearch);
       $('fileInput').addEventListener('change', function(e) {
         var files = e.target.files;
         if (!files || !files.length) return;
@@ -3376,24 +3399,6 @@
       $('composerAddModelSave').addEventListener('click', saveQuickCustomModel);
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });
-
-      var pendingFetchUrl = null;
-
-      $('fetchUrlBtn').addEventListener('click', function() {
-        $('composerFetchURL').classList.toggle('visible');
-        if ($('composerFetchURL').classList.contains('visible')) $('composerFetchUrlInput').focus();
-      });
-      $('composerFetchUrlCancel').addEventListener('click', function() {
-        $('composerFetchURL').classList.remove('visible');
-        pendingFetchUrl = null;
-      });
-      $('composerFetchUrlGo').addEventListener('click', function() {
-        var url = $('composerFetchUrlInput').value.trim();
-        if (!url) return;
-        pendingFetchUrl = url;
-        $('composerFetchURL').classList.remove('visible');
-        showToast('URL added: ' + url, 'info');
-      });
 
       $('toastClose').addEventListener('click', dismissToast);
       toast.addEventListener('click', function(e) { if (e.target === toast) dismissToast(); });

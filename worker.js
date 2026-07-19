@@ -389,41 +389,38 @@ export default {
     var searchResults = '';
     if (web_search && !(provider === 'groq' && model && model.indexOf('groq/') === 0)) {
       const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-      var rawQuery = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
-      if (rawQuery) {
-        rawQuery = rawQuery.replace(/^(what|who|when|where|why|how|is|are|was|were|can|could|would|should|will|did|do|does|tell me about|explain|find|search for|show me|give me|i want|i need)\s+/i, '').trim();
-        var queryWords = rawQuery.split(/\s+/).filter(function(w) { return w.length > 2 && !/^(the|and|for|are|was|but|not|you|its|has|had|been|this|that|with|from|your|have|they|will|can|all|out|about|into|some|just)$/i.test(w); });
-        var cleanQuery = queryWords.slice(0, 8).join(' ');
-        if (cleanQuery) {
-          try {
-            const tavilyRes = await fetch('https://api.tavily.com/search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                api_key: env.TAVILY_API_KEY,
-                query: cleanQuery,
-                search_depth: 'basic',
-                max_results: 6,
-                include_answer: false,
-              }),
-            });
-            if (tavilyRes.ok) {
-              const data = await tavilyRes.json();
-              const results = data.results || [];
-              if (results.length) {
-                searchResults = 'Current web search results:\n\n' +
-                  results.map(function(r, i) {
-                    var entry = (i + 1) + '. ' + (r.title || '');
-                    if (r.url) entry += '\n   Source: ' + r.url;
-                    if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
-                    entry += '\n   ' + (r.content || '');
-                    return entry;
-                  }).join('\n\n') +
-                  '\n\nAnswer the question above using these search results. Do not mention the search.';
-              }
+      const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
+      if (query) {
+        try {
+          const tavilyRes = await fetch('https://api.tavily.com/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              api_key: env.TAVILY_API_KEY,
+              query: query,
+              search_depth: 'advanced',
+              max_results: 8,
+              include_answer: false,
+            }),
+          });
+          if (tavilyRes.ok) {
+            const data = await tavilyRes.json();
+            const results = data.results || [];
+            if (results.length) {
+              searchResults = 'Current web search results:\n\n' +
+                results.map(function(r, i) {
+                  var entry = (i + 1) + '. ' + (r.title || '');
+                  if (r.url) entry += '\n   Source: ' + r.url;
+                  if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
+                  entry += '\n   ' + (r.content || '');
+                  return entry;
+                }).join('\n\n') +
+                '\n\nAnswer the question above using these search results. Do not mention the search.';
             }
-          } catch (_) { /* search failed, silently skip */ }
-        }
+          } else {
+            console.error('TAVILY FAILED:', tavilyRes.status, await tavilyRes.text());
+          }
+        } catch (e) { console.error('TAVILY THREW:', e.message); }
       }
     }
 

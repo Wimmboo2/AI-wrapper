@@ -345,6 +345,21 @@
 
     .chat-item-del svg { width: 13px; height: 13px; }
 
+    .chat-streaming-indicator {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+      margin-right: 2px;
+      animation: streamPulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes streamPulse {
+      0%, 100% { opacity: 0.4; transform: scale(0.85); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+
     .empty-list {
       padding: 10px;
       font-size: 12.5px;
@@ -465,6 +480,42 @@
       overflow-y: auto;
       scroll-behavior: smooth;
     }
+
+    .jump-latest {
+      position: absolute;
+      bottom: 140px;
+      left: 50%;
+      transform: translateX(-50%) translateY(8px);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 20;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    .jump-latest.visible {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .jump-latest:hover {
+      background: var(--bg-active);
+      color: var(--text);
+    }
+
+    .jump-latest svg { width: 14px; height: 14px; }
 
     .messages {
       max-width: 740px;
@@ -1253,13 +1304,14 @@
       width: 100%;
       max-width: 440px;
       max-height: 90vh;
-      overflow-y: auto;
-      overflow-x: hidden;
+      overflow: hidden;
       position: relative;
       scrollbar-gutter: stable;
       box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
       transform: translateY(10px) scale(0.98);
       transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      display: flex;
+      flex-direction: column;
     }
 
     body.incognito .modal { background: #222226; }
@@ -1273,6 +1325,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 18px 20px 10px;
+      flex-shrink: 0;
     }
 
     .modal-title {
@@ -1281,7 +1334,12 @@
       letter-spacing: -0.01em;
     }
 
-    .modal-body { padding: 6px 20px 16px; }
+    .modal-body {
+      padding: 6px 20px 16px;
+      overflow-y: auto;
+      flex: 1;
+      min-height: 0;
+    }
 
     .setting-group { margin-bottom: 20px; }
     .setting-group:last-child { margin-bottom: 0; }
@@ -1319,9 +1377,9 @@
       -webkit-appearance: none;
       appearance: none;
       width: 100%;
-      height: 3px;
+      height: 4px;
       border-radius: 2px;
-      background: rgba(255,255,255,0.08);
+      background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct, 50%), rgba(255,255,255,0.08) var(--pct, 50%), rgba(255,255,255,0.08) 100%);
       outline: none;
       cursor: pointer;
     }
@@ -1329,12 +1387,34 @@
     .setting-slider::-webkit-slider-thumb {
       -webkit-appearance: none;
       appearance: none;
-      width: 14px;
-      height: 14px;
+      width: 16px;
+      height: 16px;
       border-radius: 50%;
-      background: var(--text-secondary);
+      background: var(--accent);
       cursor: pointer;
-      box-shadow: 0 0 0 3px rgba(255,255,255,0.06);
+      border: none;
+      box-shadow: 0 0 0 4px var(--accent-soft);
+      transition: box-shadow 0.15s;
+    }
+
+    .setting-slider::-webkit-slider-thumb:hover {
+      box-shadow: 0 0 0 6px var(--accent-soft);
+    }
+
+    .setting-slider::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      border: none;
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+
+    .setting-slider::-moz-range-track {
+      height: 4px;
+      border-radius: 2px;
+      background: transparent;
     }
 
     .toggle-row {
@@ -1378,11 +1458,16 @@
     .toggle input:checked + .toggle-track::after { transform: translateX(18px); }
 
     .modal-footer {
-      padding: 10px 20px 16px;
+      padding: 14px 20px;
       display: flex;
       justify-content: flex-end;
       gap: 8px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      background: #252525;
     }
+
+    body.incognito .modal-footer { background: #222226; }
 
     .btn {
       padding: 8px 14px;
@@ -1782,6 +1867,11 @@
         <div class="messages empty" id="messages"></div>
       </div>
 
+      <button class="jump-latest" id="jumpLatestBtn" type="button">
+        Jump to latest
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+
       <div class="composer-area" id="composerArea">
         <div class="metrics-row" id="metricsRow">
           <button class="metrics-toggle" id="metricsToggle" type="button">
@@ -1989,7 +2079,8 @@
               <span class="toggle-track"></span>
             </label>
           </div>
-    </div>
+        </div>
+      </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" id="resetSettingsBtn">Reset</button>
         <button class="btn btn-primary" id="saveSettingsBtn">Done</button>
@@ -2283,8 +2374,7 @@
 
       var chats = loadJSON('omni_chats', []);
       var activeChatId = localStorage.getItem('omni_active_chat') || null;
-      var isStreaming = false;
-      var abortController = null;
+      var streamControllers = {};
       var sidebarCollapsed = localStorage.getItem('omni_sidebar') === 'collapsed';
       var incognito = false;
       var incognitoChat = null;
@@ -2433,6 +2523,7 @@
       }
 
       function deleteChat(id) {
+        if (streamControllers[id]) { streamControllers[id].abort(); delete streamControllers[id]; }
         chats = chats.filter(function(c) { return c.id !== id; });
         if (!incognito && activeChatId === id) {
           activeChatId = chats.length ? chats[0].id : null;
@@ -2487,7 +2578,6 @@
       }
 
       function enterIncognito() {
-        if (isStreaming) stopGeneration();
         incognito = true;
         if (!incognitoChat) createChat({ asIncognito: true });
         setIncognitoUI(true);
@@ -2498,7 +2588,6 @@
       }
 
       function exitIncognito() {
-        if (isStreaming) stopGeneration();
         incognito = false;
         incognitoChat = null;
         setIncognitoUI(false);
@@ -2515,7 +2604,6 @@
       }
 
       function startNewChat() {
-        if (isStreaming) stopGeneration();
         createChat({ asIncognito: incognito });
         renderAll();
         composerInput.focus();
@@ -2695,11 +2783,16 @@
           delSpan.title = 'Delete';
           delSpan.innerHTML = ICONS.trash;
           btn.appendChild(titleSpan);
+          if (chat.id in streamControllers) {
+            var dot = document.createElement('span');
+            dot.className = 'chat-streaming-indicator';
+            dot.title = 'Generating...';
+            btn.appendChild(dot);
+          }
           btn.appendChild(delSpan);
           btn.addEventListener('click', function(e) {
             if (e.target.closest('.chat-item-del')) { e.stopPropagation(); deleteChat(chat.id); return; }
             if (e.target.closest('.chat-rename-input')) return;
-            if (isStreaming) stopGeneration();
             activeChatId = chat.id;
             persistChats();
             renderAll();
@@ -2781,9 +2874,12 @@
         var hasMessages = !!(chat && chat.messages.length);
         messagesEl.classList.toggle('empty', !hasMessages);
         messagesEl.innerHTML = '';
+        scrolledUp = false;
+        var jumpBtn = $('jumpLatestBtn');
+        if (jumpBtn) jumpBtn.classList.remove('visible');
         if (!hasMessages) { messagesEl.appendChild(buildEmptyState()); updateMetrics(null); return; }
         chat.messages.forEach(function(msg, idx) {
-          var streaming = isStreaming && idx === chat.messages.length - 1 && msg.role === 'assistant';
+          var streaming = (chat.id in streamControllers) && idx === chat.messages.length - 1 && msg.role === 'assistant';
           messagesEl.appendChild(buildMessageEl(msg, streaming, idx));
         });
         updateMetrics(chat.metrics);
@@ -2893,7 +2989,7 @@
       }
 
       function regenerateMessage(msgIndex) {
-        if (isStreaming) return;
+        if (activeChatId in streamControllers) return;
         var chat = getActiveChat();
         if (!chat || !chat.messages[msgIndex]) return;
         var parentUserIdx = msgIndex - 1;
@@ -2917,7 +3013,7 @@
       }
 
       function cycleBranch(parentUserIdx, direction) {
-        if (isStreaming) return;
+        if (activeChatId in streamControllers) return;
         var chat = getActiveChat();
         if (!chat || !chat._branches || !chat._branches[parentUserIdx]) return;
         var branches = chat._branches[parentUserIdx];
@@ -2944,7 +3040,7 @@
       }
 
       function beginEditMessage(msgIndex, role) {
-        if (isStreaming) return;
+        if (activeChatId in streamControllers) return;
         var chat = getActiveChat();
         if (!chat || !chat.messages[msgIndex]) return;
         var msg = chat.messages[msgIndex];
@@ -3231,6 +3327,8 @@
         $('tempValue').textContent = Number(settings.temperature).toFixed(2);
         $('settingMaxTokens').value = settings.maxTokens;
         $('maxTokensValue').textContent = Number(settings.maxTokens).toLocaleString();
+        updateSliderFill($('settingTemp'));
+        updateSliderFill($('settingMaxTokens'));
         $('settingThinking').checked = settings.thinking;
         $('settingCustomURL').value = settings.customBaseURL || '';
         $('settingSystemPrompt').value = settings.systemPrompt || '';
@@ -3297,7 +3395,7 @@
 
       async function sendMessage() {
         var text = composerInput.value.trim();
-        if (!text || isStreaming) return;
+        if (!text || (activeChatId in streamControllers)) return;
 
         if (!settings.apiEndpoint) { showToast('Set your API endpoint in Settings first'); return; }
         var effectiveKey = settings.apiKeys[settings.provider] || settings.apiKey;
@@ -3357,9 +3455,9 @@
         scrollToBottom();
         renderChatList();
 
-        isStreaming = true;
-        setSendStop(true);
-        abortController = new AbortController();
+        streamControllers[chat.id] = new AbortController();
+        if (chat.id === activeChatId) setSendStop(true);
+        var isActive = function() { return chat.id === activeChatId; };
 
         var history = chat.messages
           .filter(function(m) { return m.role === 'user' || (m.role === 'assistant' && m.content); })
@@ -3417,7 +3515,7 @@
               Accept: 'application/x-ndjson, application/json, text/event-stream',
             },
             body: JSON.stringify(requestBody),
-            signal: abortController.signal,
+            signal: streamControllers[chat.id] ? streamControllers[chat.id].signal : undefined,
           });
 
           if (!res.ok) {
@@ -3451,7 +3549,7 @@
                 if (payload) {
                   if (firstTokenAt == null) firstTokenAt = performance.now();
                   assistantMsg.content += payload;
-                  updateLastAssistantMessage(assistantMsg);
+                  if (isActive()) updateLastAssistantMessage(assistantMsg);
                 }
                 continue;
               }
@@ -3461,7 +3559,7 @@
 
               if (thinkingDelta && settings.thinking && typeof thinkingDelta === 'string') {
                 assistantMsg.thinking = (assistantMsg.thinking || '') + thinkingDelta;
-                updateLastAssistantMessage(assistantMsg);
+                if (isActive()) updateLastAssistantMessage(assistantMsg);
               }
               if (event.thinking_done || event.thinking_complete) { assistantMsg.thinkingComplete = true; }
 
@@ -3469,7 +3567,7 @@
                 if (firstTokenAt == null) { firstTokenAt = performance.now(); localMetrics.ttft_ms = firstTokenAt - streamStart; }
                 if (assistantMsg.thinking && assistantMsg.thinkingComplete === false) { assistantMsg.thinkingComplete = true; }
                 assistantMsg.content += delta;
-                updateLastAssistantMessage(assistantMsg);
+                if (isActive()) updateLastAssistantMessage(assistantMsg);
               }
 
               if (event.usage) {
@@ -3520,33 +3618,43 @@
           assistantMsg._inTokens = localMetrics.input_tokens;
           assistantMsg._outTokens = localMetrics.output_tokens;
           if (!chat.incognito) persistChats();
-          finishStreamingUI();
-          updateMetrics(localMetrics);
-          updateLastAssistantMessage(assistantMsg);
-          finishStreamingUI();
+          if (isActive()) {
+            finishStreamingUI();
+            updateMetrics(localMetrics);
+            updateLastAssistantMessage(assistantMsg);
+            finishStreamingUI();
+          }
         } catch (err) {
           if (err.name === 'AbortError') {
             if (!assistantMsg.content) assistantMsg.content = '*(Generation stopped)*';
           } else {
             console.error(err);
             if (!assistantMsg.content) assistantMsg.content = 'Error: ' + err.message;
-            showToast(err.message || 'Failed to reach endpoint');
+            if (isActive()) showToast(err.message || 'Failed to reach endpoint');
           }
           assistantMsg.thinkingComplete = true;
-          finishStreamingUI();
-          updateLastAssistantMessage(assistantMsg);
-          finishStreamingUI();
+          if (isActive()) {
+            finishStreamingUI();
+            updateLastAssistantMessage(assistantMsg);
+            finishStreamingUI();
+          }
           if (!chat.incognito) persistChats();
         } finally {
-          isStreaming = false;
-          abortController = null;
-          setSendStop(false);
-          updateSendBtn();
-          placeComposer();
+          delete streamControllers[chat.id];
+          if (isActive()) {
+            setSendStop(false);
+            updateSendBtn();
+            placeComposer();
+          }
+          renderChatList();
         }
       }
 
-      function stopGeneration() { if (abortController) abortController.abort(); }
+      function stopGeneration() {
+        if (activeChatId && streamControllers[activeChatId]) {
+          streamControllers[activeChatId].abort();
+        }
+      }
 
       function autoResize() {
         composerInput.style.height = 'auto';
@@ -3554,10 +3662,10 @@
       }
 
       function updateSendBtn() {
-        if (isStreaming) return;
+        var isStreamingActive = activeChatId in streamControllers;
         var has = !!composerInput.value.trim();
-        sendBtn.disabled = !has;
-        sendBtn.classList.toggle('ready', has);
+        sendBtn.disabled = isStreamingActive || !has;
+        sendBtn.classList.toggle('ready', has && !isStreamingActive);
       }
 
       function setSendStop(stop) {
@@ -3577,8 +3685,27 @@
         }
       }
 
+      var scrolledUp = false;
       function scrollToBottom() {
+        if (scrolledUp) return;
         requestAnimationFrame(function() { messagesWrap.scrollTop = messagesWrap.scrollHeight; });
+      }
+
+      function updateScrolledUp() {
+        var nearBottom = messagesWrap.scrollTop + messagesWrap.clientHeight >= messagesWrap.scrollHeight - 50;
+        scrolledUp = !nearBottom;
+        var btn = $('jumpLatestBtn');
+        if (btn) {
+          var show = scrolledUp && (activeChatId in streamControllers);
+          btn.classList.toggle('visible', show);
+        }
+      }
+
+      function jumpToLatest() {
+        scrolledUp = false;
+        messagesWrap.scrollTop = messagesWrap.scrollHeight;
+        var btn = $('jumpLatestBtn');
+        if (btn) btn.classList.remove('visible');
       }
 
       var toastTimer = null;
@@ -3629,8 +3756,16 @@
         populateComposerModelSelect();
       });
 
-      $('settingTemp').addEventListener('input', function(e) { $('tempValue').textContent = Number(e.target.value).toFixed(2); });
-      $('settingMaxTokens').addEventListener('input', function(e) { $('maxTokensValue').textContent = Number(e.target.value).toLocaleString(); });
+      function updateSliderFill(slider) {
+        var min = Number(slider.min);
+        var max = Number(slider.max);
+        var val = Number(slider.value);
+        var pct = ((val - min) / (max - min)) * 100;
+        slider.style.setProperty('--pct', pct + '%');
+      }
+
+      $('settingTemp').addEventListener('input', function(e) { $('tempValue').textContent = Number(e.target.value).toFixed(2); updateSliderFill(e.target); });
+      $('settingMaxTokens').addEventListener('input', function(e) { $('maxTokensValue').textContent = Number(e.target.value).toLocaleString(); updateSliderFill(e.target); });
 
       $('apiKeyToggle').addEventListener('click', function() {
         var input = $('settingApiKey');
@@ -3650,6 +3785,9 @@
       });
 
       $('metricsToggle').addEventListener('click', function() { metricsRow.classList.toggle('open'); });
+
+      messagesWrap.addEventListener('scroll', updateScrolledUp);
+      $('jumpLatestBtn').addEventListener('click', jumpToLatest);
 
       var pendingFiles = [];
       var webSearch = false;
@@ -3741,12 +3879,12 @@
         if (pastedCount) showToast(pastedCount + ' image' + (pastedCount !== 1 ? 's' : '') + ' pasted', 'info');
       });
 
-      sendBtn.addEventListener('click', function() { if (isStreaming) stopGeneration(); else sendMessage(); });
+      sendBtn.addEventListener('click', function() { if (activeChatId in streamControllers) stopGeneration(); else sendMessage(); });
 
       composerInput.addEventListener('input', function() { autoResize(); updateSendBtn(); });
 
       composerInput.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isStreaming) sendMessage(); }
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!(activeChatId in streamControllers)) sendMessage(); }
       });
 
       $('composerModelSelect').addEventListener('change', applyComposerModelChange);

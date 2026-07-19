@@ -389,48 +389,41 @@ export default {
     var searchResults = '';
     if (web_search && !(provider === 'groq' && model && model.indexOf('groq/') === 0)) {
       const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-      const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
-      if (query) {
-        try {
-          const ddgRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&df=d`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-          });
-          if (ddgRes.ok) {
-            const html = await ddgRes.text();
-            const snippets = [];
-            let match;
-            // Try DDG's current HTML result format
-            const patternNew = /<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs;
-            while ((match = patternNew.exec(html)) !== null && snippets.length < 6) {
-              const text = match[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#x27;/g, "'").trim();
-              if (text) snippets.push(text);
-            }
-            // Fallback: old DDG HTML format
-            if (!snippets.length) {
-              const patternOld = /<td[^>]*class="result-snippet"[^>]*>(.*?)<\/td>/gs;
-              while ((match = patternOld.exec(html)) !== null && snippets.length < 6) {
-                const text = match[1].replace(/<[^>]+>/g, '').trim();
-                if (text) snippets.push(text);
+      var rawQuery = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
+      if (rawQuery) {
+        rawQuery = rawQuery.replace(/^(what|who|when|where|why|how|is|are|was|were|can|could|would|should|will|did|do|does|tell me about|explain|find|search for|show me|give me|i want|i need)\s+/i, '').trim();
+        var queryWords = rawQuery.split(/\s+/).filter(function(w) { return w.length > 2 && !/^(the|and|for|are|was|but|not|you|its|has|had|been|this|that|with|from|your|have|they|will|can|all|out|about|into|some|just)$/i.test(w); });
+        var cleanQuery = queryWords.slice(0, 8).join(' ');
+        if (cleanQuery) {
+          try {
+            const tavilyRes = await fetch('https://api.tavily.com/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                api_key: env.TAVILY_API_KEY,
+                query: cleanQuery,
+                search_depth: 'basic',
+                max_results: 6,
+                include_answer: false,
+              }),
+            });
+            if (tavilyRes.ok) {
+              const data = await tavilyRes.json();
+              const results = data.results || [];
+              if (results.length) {
+                searchResults = 'Current web search results:\n\n' +
+                  results.map(function(r, i) {
+                    var entry = (i + 1) + '. ' + (r.title || '');
+                    if (r.url) entry += '\n   Source: ' + r.url;
+                    if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
+                    entry += '\n   ' + (r.content || '');
+                    return entry;
+                  }).join('\n\n') +
+                  '\n\nAnswer the question above using these search results. Do not mention the search.';
               }
             }
-            if (snippets.length) {
-              searchResults = 'The following are LIVE web search results. Use ONLY these as your primary source. If anything below contradicts your training data, trust the search results — they are more current.\n\nSearch results for: "' + query + '"\n\n' + snippets.map(function(s, i) { return (i + 1) + '. ' + s; }).join('\n') + '\n\nDont mention you searched the web. Just answer naturally using this information.';
-            }
-          }
-          if (!searchResults) {
-            const iaRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
-            if (iaRes.ok) {
-              const data = await iaRes.json();
-              const parts = [];
-              if (data.AbstractText) parts.push(data.AbstractText);
-              if (data.Answer) parts.push(data.Answer);
-              if (data.Definition) parts.push(data.Definition);
-              if (parts.length) {
-                searchResults = 'The following is a LIVE web search result. Use this as your primary source. If it contradicts your training data, trust this result — it is more current.\n\n' + parts.join('\n\n') + '\n\nDont mention you searched the web. Just answer naturally using this information.';
-              }
-            }
-          }
-        } catch (_) { /* search failed, silently skip */ }
+          } catch (_) { /* search failed, silently skip */ }
+        }
       }
     }
 

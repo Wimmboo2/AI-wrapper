@@ -398,14 +398,37 @@ export default {
           if (ddgRes.ok) {
             const html = await ddgRes.text();
             const snippets = [];
-            const pattern = /<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs;
             let match;
-            while ((match = pattern.exec(html)) !== null && snippets.length < 6) {
-              const text = match[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+            // Try DDG's current HTML result format
+            const patternNew = /<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs;
+            while ((match = patternNew.exec(html)) !== null && snippets.length < 6) {
+              const text = match[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#x27;/g, "'").trim();
               if (text) snippets.push(text);
+            }
+            // Fallback: old DDG HTML format
+            if (!snippets.length) {
+              const patternOld = /<td[^>]*class="result-snippet"[^>]*>(.*?)<\/td>/gs;
+              while ((match = patternOld.exec(html)) !== null && snippets.length < 6) {
+                const text = match[1].replace(/<[^>]+>/g, '').trim();
+                if (text) snippets.push(text);
+              }
             }
             if (snippets.length) {
               searchResults = 'Web search results for "' + query + '":\n\n' + snippets.join('\n');
+            }
+          }
+          // Fallback: Instant Answer API for direct facts
+          if (!searchResults) {
+            const iaRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
+            if (iaRes.ok) {
+              const data = await iaRes.json();
+              const parts = [];
+              if (data.AbstractText) parts.push(data.AbstractText);
+              if (data.Answer) parts.push(data.Answer);
+              if (data.Definition) parts.push(data.Definition);
+              if (parts.length) {
+                searchResults = 'Web search result for "' + query + '":\n\n' + parts.join('\n');
+              }
             }
           }
         } catch (_) { /* search failed, silently skip */ }

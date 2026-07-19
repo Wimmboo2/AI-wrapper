@@ -16,7 +16,7 @@ const PROVIDER_URLS = {
 };
 
 const ALLOWED_ORIGINS = [
-  'https://omni-api.rafandra-aydin.workers.dev',
+  'https://claude-like-ai-wrapper.rafandra-aydin.workers.dev',
 ];
 
 const MONTHLY_CAP = 900;
@@ -447,6 +447,8 @@ export default {
             } catch (e) { console.error('TAVILY THREW:', e.message); }
           }
         }
+      } else {
+        console.error('SEARCH ORIGIN BLOCKED:', reqOrigin);
       }
     }
 

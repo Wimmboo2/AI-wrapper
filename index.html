@@ -2933,11 +2933,6 @@
         updateMetrics(null);
       }
 
-      function applyComposerModelChange() {
-        var wrap = $('modelPickerWrap');
-        if (wrap) return;
-      }
-
       function populateProviderPicker() {
         var dropdown = $('providerPickerDropdown');
         if (!dropdown) return;
@@ -3748,16 +3743,6 @@
         if (!chat.incognito) persistChats();
 
         composerInput.value = '';
-        clearPendingFiles();
-        autoResize();
-        updateSendBtn();
-
-        messagesEl.classList.remove('empty');
-        if (messagesEl.querySelector('.empty-state')) { messagesEl.innerHTML = ''; }
-        if (composerShell.parentElement !== composerArea) { composerArea.appendChild(composerShell); composerNote.style.display = ''; }
-
-        messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent, _rawContent: userContent }, false, chat.messages.length - 1));
-
         var initialLabel = 'Thinking.';
         if (webSearch && pendingFiles.length) {
           initialLabel = 'Searching web \u00b7 Looking at images.';
@@ -3768,6 +3753,16 @@
           for (var pi2 = 0; pi2 < pendingFiles.length; pi2++) { if (pendingFiles[pi2].type.startsWith('image/')) { hasImage = true; break; } }
           initialLabel = hasImage ? 'Looking at images.' : 'Reading files.';
         }
+        clearPendingFiles();
+        autoResize();
+        updateSendBtn();
+
+        messagesEl.classList.remove('empty');
+        if (messagesEl.querySelector('.empty-state')) { messagesEl.innerHTML = ''; }
+        if (composerShell.parentElement !== composerArea) { composerArea.appendChild(composerShell); composerNote.style.display = ''; }
+
+        messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent, _rawContent: userContent }, false, chat.messages.length - 1));
+
         var assistantMsg = { role: 'assistant', content: '', thinking: '', thinkingComplete: false, _initialLabel: initialLabel };
         chat.messages.push(assistantMsg);
         messagesEl.appendChild(buildMessageEl(assistantMsg, true, chat.messages.length - 1));

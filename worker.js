@@ -387,12 +387,12 @@ export default {
     if (!messages || !messages.length) return jsonResponse({ error: { message: 'Missing messages' } }, 400);
 
     var searchResults = '';
-    if (web_search) {
+    if (web_search && !(provider === 'groq' && model && model.indexOf('groq/') === 0)) {
       const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
       const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
       if (query) {
         try {
-          const ddgRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+          const ddgRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&df=d`, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
           });
           if (ddgRes.ok) {
@@ -442,7 +442,15 @@ export default {
       content: m.content,
     }));
     if (searchResults) {
-      safeMessages.unshift({ role: 'system', content: searchResults });
+      for (var si = safeMessages.length - 1; si >= 0; si--) {
+        if (safeMessages[si].role === 'user') {
+          var uc = safeMessages[si].content;
+          if (typeof uc === 'string') {
+            safeMessages[si].content = searchResults + '\n\n=== USER QUERY ===\n\n' + uc;
+          }
+          break;
+        }
+      }
     }
 
     const { readable, writable } = new TransformStream();

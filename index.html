@@ -2739,8 +2739,28 @@
         else if (hasThinkingText && msg.thinking) { body.appendChild(buildThinkingDetails(msg.thinking, true)); }
         var content = document.createElement('div');
         content.className = 'message-content' + (streaming && msg.content ? ' streaming-cursor' : '');
-        if (msg.role === 'user') content.textContent = msg.content;
-        else content.innerHTML = renderMarkdown(msg.content || '');
+        if (msg.role === 'user') {
+          if (Array.isArray(msg._rawContent)) {
+            for (var pi = 0; pi < msg._rawContent.length; pi++) {
+              var part = msg._rawContent[pi];
+              if (part.type === 'image_url' && part.image_url) {
+                var img = document.createElement('img');
+                img.src = part.image_url.url;
+                img.style.maxWidth = '280px';
+                img.style.maxHeight = '280px';
+                img.style.borderRadius = '10px';
+                img.style.marginBottom = '4px';
+                img.style.display = 'block';
+                content.appendChild(img);
+              } else if (part.text) {
+                var textNode = document.createTextNode(part.text);
+                content.appendChild(textNode);
+              }
+            }
+          } else {
+            content.textContent = msg.content || '';
+          }
+        } else content.innerHTML = renderMarkdown(msg.content || '');
         if (!msg.content && msg.role === 'assistant') content.style.display = 'none';
         body.appendChild(content);
         if (msg.content && !(streaming && msg.role === 'assistant')) { body.appendChild(buildMessageActions(msg, msgIndex)); }
@@ -3015,7 +3035,7 @@
         if (messagesEl.querySelector('.empty-state')) { messagesEl.innerHTML = ''; }
         if (composerShell.parentElement !== composerArea) { composerArea.appendChild(composerShell); composerNote.style.display = ''; }
 
-        messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent }, false, chat.messages.length - 1));
+        messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent, _rawContent: userContent }, false, chat.messages.length - 1));
 
         var assistantMsg = { role: 'assistant', content: '', thinking: '', thinkingComplete: false };
         chat.messages.push(assistantMsg);
@@ -3360,11 +3380,11 @@
       $('fileInput').addEventListener('change', function(e) {
         var files = e.target.files;
         if (!files || !files.length) return;
-        var reader = new FileReader();
         var idx = 0;
         function readNext() {
           if (idx >= files.length) { $('fileInput').value = ''; updateSendBtn(); return; }
           var file = files[idx];
+          var reader = new FileReader();
           if (file.type.startsWith('image/')) {
             reader.onload = function(ev) {
               pendingFiles.push({ name: file.name, type: file.type, data: ev.target.result, size: file.size });

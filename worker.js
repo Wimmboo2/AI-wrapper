@@ -392,18 +392,21 @@ export default {
       const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
       if (query) {
         try {
-          const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
+          const ddgRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          });
           if (ddgRes.ok) {
-            const ddgData = await ddgRes.json();
+            const html = await ddgRes.text();
             const snippets = [];
-            const topics = ddgData.RelatedTopics || [];
-            if (ddgData.AbstractText) snippets.push('Summary: ' + ddgData.AbstractText);
-            if (ddgData.Answer) snippets.push('Answer: ' + ddgData.Answer);
-            for (const t of topics) {
-              if (t.Text) snippets.push(t.Text);
-              if (t.Topics) t.Topics.forEach((st) => { if (st.Text) snippets.push(st.Text); });
+            const pattern = /<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs;
+            let match;
+            while ((match = pattern.exec(html)) !== null && snippets.length < 6) {
+              const text = match[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+              if (text) snippets.push(text);
             }
-            searchResults = 'Web search results for "' + query + '":\n\n' + snippets.slice(0, 6).join('\n');
+            if (snippets.length) {
+              searchResults = 'Web search results for "' + query + '":\n\n' + snippets.join('\n');
+            }
           }
         } catch (_) { /* search failed, silently skip */ }
       }

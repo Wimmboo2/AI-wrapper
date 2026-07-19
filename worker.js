@@ -15,6 +15,12 @@ const PROVIDER_URLS = {
   anthropic: 'https://api.anthropic.com/v1/messages',
 };
 
+const ALLOWED_ORIGINS = [
+  'https://omni-api.rafandra-aydin.workers.dev',
+];
+
+const MONTHLY_CAP = 900;
+
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
@@ -388,39 +394,59 @@ export default {
 
     var searchResults = '';
     if (web_search && !(provider === 'groq' && model && model.indexOf('groq/') === 0)) {
-      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-      const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
-      if (query) {
+      const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
+      const originAllowed = !reqOrigin || ALLOWED_ORIGINS.some(function(o) { return reqOrigin.indexOf(o) === 0; });
+      if (originAllowed) {
+        const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
+        let counter = 0;
         try {
-          const tavilyRes = await fetch('https://api.tavily.com/search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              api_key: env.TAVILY_API_KEY,
-              query: query,
-              search_depth: 'advanced',
-              max_results: 8,
-              include_answer: false,
-            }),
-          });
-          if (tavilyRes.ok) {
-            const data = await tavilyRes.json();
-            const results = data.results || [];
-            if (results.length) {
-              searchResults = 'Current web search results:\n\n' +
-                results.map(function(r, i) {
-                  var entry = (i + 1) + '. ' + (r.title || '');
-                  if (r.url) entry += '\n   Source: ' + r.url;
-                  if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
-                  entry += '\n   ' + (r.content || '');
-                  return entry;
-                }).join('\n\n') +
-                '\n\nAnswer the question above using these search results. Do not mention the search.';
-            }
-          } else {
-            console.error('TAVILY FAILED:', tavilyRes.status, await tavilyRes.text());
+          const val = await env.SEARCH_COUNTER.get(monthKey);
+          counter = val ? parseInt(val, 10) : 0;
+        } catch (e) { console.error('KV READ FAILED:', e.message); }
+        if (counter >= MONTHLY_CAP) {
+          console.error('TAVILY CAP HIT:', monthKey, counter);
+        } else {
+          const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+          const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
+          if (query) {
+            try {
+              const tavilyRes = await fetch('https://api.tavily.com/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  api_key: env.TAVILY_API_KEY,
+                  query: query,
+                  search_depth: 'advanced',
+                  max_results: 8,
+                  include_answer: false,
+                }),
+              });
+              if (tavilyRes.ok) {
+                const data = await tavilyRes.json();
+                const results = data.results || [];
+                if (results.length) {
+                  searchResults = 'Current web search results:\n\n' +
+                    results.map(function(r, i) {
+                      var entry = (i + 1) + '. ' + (r.title || '');
+                      if (r.url) entry += '\n   Source: ' + r.url;
+                      if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
+                      entry += '\n   ' + (r.content || '');
+                      return entry;
+                    }).join('\n\n') +
+                    '\n\nAnswer the question above using these search results. Do not mention the search.';
+                }
+                ctx.waitUntil(
+                  (async function() {
+                    try { await env.SEARCH_COUNTER.put(monthKey, String(counter + 1), { expirationTtl: 3456000 }); }
+                    catch (e) { console.error('KV WRITE FAILED:', e.message); }
+                  })()
+                );
+              } else {
+                console.error('TAVILY FAILED:', tavilyRes.status, await tavilyRes.text());
+              }
+            } catch (e) { console.error('TAVILY THREW:', e.message); }
           }
-        } catch (e) { console.error('TAVILY THREW:', e.message); }
+        }
       }
     }
 

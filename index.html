@@ -2695,8 +2695,9 @@
         }
         if (msg.role === 'assistant') {
           var chat = getActiveChat();
-          if (chat && chat._branches && chat._branches[msgIndex] && chat._branches[msgIndex].length) {
-            var branchCount = chat._branches[msgIndex].length;
+          var parentIdx = msgIndex - 1;
+          if (chat && chat._branches && parentIdx >= 0 && chat._branches[parentIdx] && chat._branches[parentIdx].length) {
+            var branchCount = chat._branches[parentIdx].length;
             var branchNav = document.createElement('span');
             branchNav.className = 'branch-nav';
             var prevBtn = document.createElement('button');
@@ -2706,14 +2707,14 @@
             prevBtn.title = 'Previous response';
             var label = document.createElement('span');
             label.className = 'branch-label';
-            label.textContent = (chat._branchActive && chat._branchActive[msgIndex] != null ? (chat._branchActive[msgIndex] + 1) : (branchCount + 1)) + '/' + (branchCount + 1);
+            label.textContent = (chat._branchActive && chat._branchActive[parentIdx] != null ? (chat._branchActive[parentIdx] + 1) : (branchCount + 1)) + '/' + (branchCount + 1);
             var nextBtn = document.createElement('button');
             nextBtn.type = 'button';
             nextBtn.className = 'msg-action branch-btn';
             nextBtn.innerHTML = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="5 3 9 7 5 11"/></svg>';
             nextBtn.title = 'Next response';
-            prevBtn.addEventListener('click', function() { cycleBranch(msgIndex, -1); });
-            nextBtn.addEventListener('click', function() { cycleBranch(msgIndex, 1); });
+            prevBtn.addEventListener('click', function() { cycleBranch(parentIdx, -1); });
+            nextBtn.addEventListener('click', function() { cycleBranch(parentIdx, 1); });
             branchNav.appendChild(prevBtn);
             branchNav.appendChild(label);
             branchNav.appendChild(nextBtn);
@@ -2736,19 +2737,19 @@
         if (isStreaming) return;
         var chat = getActiveChat();
         if (!chat || !chat.messages[msgIndex]) return;
+        var parentUserIdx = msgIndex - 1;
+        var parentUser = chat.messages[parentUserIdx];
+        if (!parentUser || parentUser.role !== 'user') return;
         var oldMsg = chat.messages[msgIndex];
         if (!chat._branches) chat._branches = {};
-        var branchKey = msgIndex;
-        if (!chat._branches[branchKey]) chat._branches[branchKey] = [];
-        chat._branches[branchKey].push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete, metrics: oldMsg.metrics, _initialLabel: oldMsg._initialLabel });
+        if (!chat._branches[parentUserIdx]) chat._branches[parentUserIdx] = [];
+        chat._branches[parentUserIdx].push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete });
         chat._branchActive = chat._branchActive || {};
-        chat._branchActive[branchKey] = chat._branches[branchKey].length;
-        chat.messages = chat.messages.slice(0, msgIndex);
+        chat._branchActive[parentUserIdx] = chat._branches[parentUserIdx].length;
+        chat.messages = chat.messages.slice(0, parentUserIdx);
         chat.metrics = null;
-        var last = chat.messages[chat.messages.length - 1];
-        if (!last || last.role !== 'user') { renderMessages(); placeComposer(); return; }
         if (!chat.incognito) persistChats();
-        composerInput.value = last.content || '';
+        composerInput.value = parentUser.content || '';
         autoResize();
         updateSendBtn();
         renderMessages();
@@ -2756,16 +2757,16 @@
         sendMessage();
       }
 
-      function cycleBranch(msgIndex, direction) {
+      function cycleBranch(parentUserIdx, direction) {
         if (isStreaming) return;
         var chat = getActiveChat();
-        if (!chat || !chat._branches || !chat._branches[msgIndex]) return;
-        var branches = chat._branches[msgIndex];
+        if (!chat || !chat._branches || !chat._branches[parentUserIdx]) return;
+        var branches = chat._branches[parentUserIdx];
         if (!branches.length) return;
-        var current = chat.messages[msgIndex];
-        if (!current) return;
+        var current = chat.messages[parentUserIdx + 1];
+        if (!current || current.role !== 'assistant') return;
         chat._branchActive = chat._branchActive || {};
-        var active = chat._branchActive[msgIndex] != null ? chat._branchActive[msgIndex] : branches.length;
+        var active = chat._branchActive[parentUserIdx] != null ? chat._branchActive[parentUserIdx] : branches.length;
         var total = branches.length + 1;
         if (active < branches.length) {
           branches[active] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete };
@@ -2777,7 +2778,7 @@
           current.thinking = loaded.thinking;
           current.thinkingComplete = loaded.thinkingComplete;
         }
-        chat._branchActive[msgIndex] = active;
+        chat._branchActive[parentUserIdx] = active;
         if (!chat.incognito) persistChats();
         renderMessages();
         placeComposer();

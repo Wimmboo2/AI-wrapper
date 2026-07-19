@@ -414,10 +414,9 @@ export default {
               }
             }
             if (snippets.length) {
-              searchResults = 'Web search results for "' + query + '":\n\n' + snippets.join('\n');
+              searchResults = 'The following are LIVE web search results. Use ONLY these as your primary source. If anything below contradicts your training data, trust the search results — they are more current.\n\nSearch results for: "' + query + '"\n\n' + snippets.map(function(s, i) { return (i + 1) + '. ' + s; }).join('\n') + '\n\nDont mention you searched the web. Just answer naturally using this information.';
             }
           }
-          // Fallback: Instant Answer API for direct facts
           if (!searchResults) {
             const iaRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
             if (iaRes.ok) {
@@ -427,7 +426,7 @@ export default {
               if (data.Answer) parts.push(data.Answer);
               if (data.Definition) parts.push(data.Definition);
               if (parts.length) {
-                searchResults = 'Web search result for "' + query + '":\n\n' + parts.join('\n');
+                searchResults = 'The following is a LIVE web search result. Use this as your primary source. If it contradicts your training data, trust this result — it is more current.\n\n' + parts.join('\n\n') + '\n\nDont mention you searched the web. Just answer naturally using this information.';
               }
             }
           }

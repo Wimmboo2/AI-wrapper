@@ -1185,6 +1185,7 @@
       overflow-y: auto;
       overflow-x: hidden;
       position: relative;
+      scrollbar-gutter: stable;
       box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
       transform: translateY(10px) scale(0.98);
       transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
@@ -2580,11 +2581,12 @@
         scrollToBottom();
       }
 
-      function startThinkingAnim(labelEl) {
+      function startThinkingAnim(labelEl, baseLabel) {
         stopThinkingAnim();
         if (!labelEl) return;
+        var base = baseLabel || 'Thinking';
         var n = 1;
-        var frames = ['Thinking.', 'Thinking..', 'Thinking...'];
+        var frames = [base + '.', base + '..', base + '...'];
         labelEl.textContent = frames[0];
         thinkingAnimTimer = setInterval(function() { n = (n % 3) + 1; labelEl.textContent = frames[n - 1]; }, 450);
       }
@@ -2593,11 +2595,15 @@
         if (thinkingAnimTimer) { clearInterval(thinkingAnimTimer); thinkingAnimTimer = null; }
       }
 
-      function buildThinkingLive() {
+      function buildThinkingLive(label) {
         var row = document.createElement('div');
         row.className = 'thinking-row';
-        row.innerHTML = '<span class="thinking-dot"></span><span class="thinking-label">Thinking.</span>';
-        startThinkingAnim(row.querySelector('.thinking-label'));
+        var shownLabel = label || 'Thinking.';
+        row.innerHTML = '<span class="thinking-dot"></span>';
+        var labelEl = document.createElement('span');
+        labelEl.className = 'thinking-label';
+        row.appendChild(labelEl);
+        startThinkingAnim(labelEl, shownLabel.replace(/\.+$/, ''));
         return row;
       }
 
@@ -2747,7 +2753,7 @@
         role.textContent = msg.role === 'user' ? 'You' : 'Omni';
         body.appendChild(role);
         var hasThinkingText = msg.role === 'assistant' && !!msg.thinking;
-        if (msg.role === 'assistant' && streaming && !msg.content) { body.appendChild(buildThinkingLive()); }
+        if (msg.role === 'assistant' && streaming && !msg.content) { body.appendChild(buildThinkingLive(msg._initialLabel || 'Thinking.')); }
         if (hasThinkingText && msg.thinkingComplete !== false) { body.appendChild(buildThinkingDetails(msg.thinking, false)); }
         else if (hasThinkingText && msg.thinking) { body.appendChild(buildThinkingDetails(msg.thinking, true)); }
         var content = document.createElement('div');
@@ -2794,7 +2800,7 @@
         var live = body.querySelector('.thinking-row');
         var details = body.querySelector('.thinking-details');
         if (!msg.content) {
-          if (!live) { live = buildThinkingLive(); body.insertBefore(live, body.querySelector('.message-role').nextSibling); }
+          if (!live) { live = buildThinkingLive(msg._initialLabel || 'Thinking.'); body.insertBefore(live, body.querySelector('.message-role').nextSibling); }
         } else if (live) { stopThinkingAnim(); live.remove(); }
         if (msg.thinking) {
           if (!details) {
@@ -3050,7 +3056,17 @@
 
         messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent, _rawContent: userContent }, false, chat.messages.length - 1));
 
-        var assistantMsg = { role: 'assistant', content: '', thinking: '', thinkingComplete: false };
+        var initialLabel = 'Thinking.';
+        if (webSearch && pendingFiles.length) {
+          initialLabel = 'Searching web \u00b7 Looking at images.';
+        } else if (webSearch) {
+          initialLabel = 'Searching web.';
+        } else if (pendingFiles.length) {
+          var hasImage = false;
+          for (var pi2 = 0; pi2 < pendingFiles.length; pi2++) { if (pendingFiles[pi2].type.startsWith('image/')) { hasImage = true; break; } }
+          initialLabel = hasImage ? 'Looking at images.' : 'Reading files.';
+        }
+        var assistantMsg = { role: 'assistant', content: '', thinking: '', thinkingComplete: false, _initialLabel: initialLabel };
         chat.messages.push(assistantMsg);
         messagesEl.appendChild(buildMessageEl(assistantMsg, true, chat.messages.length - 1));
         placeComposer();

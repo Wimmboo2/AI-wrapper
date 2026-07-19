@@ -981,13 +981,25 @@
 
     .pending-file-remove:hover { opacity: 1; color: var(--danger); }
 
-    .web-search-indicator {
-      font-size: 10px;
+    .web-search-label {
+      display: inline-block;
+      max-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      font-size: 11px;
+      font-weight: 450;
       color: var(--accent);
-      padding: 1px 6px;
-      border-radius: 6px;
-      background: var(--accent-soft);
-      margin-left: 2px;
+      opacity: 0;
+      transition: max-width 0.35s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease, margin-left 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+      margin-left: 0;
+      vertical-align: middle;
+      line-height: 28px;
+    }
+
+    .web-search-label.visible {
+      max-width: 120px;
+      opacity: 1;
+      margin-left: 4px;
     }
 
     .send-btn {
@@ -1752,6 +1764,7 @@
                 <button class="composer-icon-btn" type="button" title="Web search" aria-label="Toggle web search" id="webSearchBtn">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 </button>
+                <span class="web-search-label" id="webSearchLabel">Web search on</span>
                 <select class="composer-model-select" id="composerModelSelect" title="Quick model switch" aria-label="Switch model"></select>
               </div>
               <div class="composer-right">
@@ -3337,20 +3350,11 @@
       function toggleWebSearch() {
         webSearch = !webSearch;
         var btn = $('webSearchBtn');
+        var label = $('webSearchLabel');
         btn.classList.toggle('active-search', webSearch);
+        label.classList.toggle('visible', webSearch);
         btn.title = webSearch ? 'Web search: on' : 'Web search';
         btn.setAttribute('aria-label', btn.title);
-        var existing = document.querySelector('.web-search-indicator');
-        if (webSearch) {
-          if (!existing) {
-            var tag = document.createElement('span');
-            tag.className = 'web-search-indicator';
-            tag.textContent = 'Web search on';
-            btn.parentNode.insertBefore(tag, btn.nextSibling);
-          }
-        } else {
-          if (existing) existing.remove();
-        }
       }
 
       function clearPendingFiles() {

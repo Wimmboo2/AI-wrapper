@@ -1014,33 +1014,142 @@
 
     .composer-icon-btn svg { width: 16px; height: 16px; }
 
-    .composer-model-select {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid var(--border-soft);
+    .model-picker-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+
+    .model-picker-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 28px;
+      padding: 0 6px 0 10px;
       border-radius: 16px;
+      border: 1px solid var(--border-soft);
+      background: rgba(255,255,255,0.05);
       color: var(--text-secondary);
       font-size: 12px;
       font-family: var(--font);
       font-weight: 450;
-      padding: 4px 24px 4px 10px;
       cursor: pointer;
       outline: none;
-      -webkit-appearance: none;
-      appearance: none;
-      max-width: 160px;
-      height: 28px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237a7874' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 4px center;
-      background-size: 12px;
+      max-width: 180px;
       transition: border-color 0.15s, background 0.15s;
     }
 
-    .composer-model-select:hover { border-color: var(--border-strong); background: rgba(255,255,255,0.08); }
-    .composer-model-select:focus { border-color: var(--accent); }
-    .composer-model-select option { background: #2a2a2a; color: var(--text); font-size: 12px; }
+    .model-picker-trigger:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+    .model-picker-trigger-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+    .model-picker-chevron { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-faint); transition: transform 0.2s; }
+    .model-picker-wrap.open .model-picker-chevron { transform: rotate(180deg); }
+
+    .model-picker-dropdown {
+      display: none;
+      position: absolute;
+      bottom: 100%;
+      right: 0;
+      margin-bottom: 4px;
+      width: 300px;
+      max-height: 380px;
+      flex-direction: column;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      z-index: 50;
+      overflow: hidden;
+    }
+
+    .model-picker-wrap.open .model-picker-dropdown { display: flex; }
+
+    .model-picker-search {
+      padding: 8px 10px;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-size: 12px;
+      font-family: var(--font);
+      outline: none;
+      flex-shrink: 0;
+    }
+
+    .model-picker-search::placeholder { color: var(--text-faint); }
+
+    .model-picker-list {
+      overflow-y: auto;
+      max-height: 260px;
+      padding: 4px 0;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .model-picker-group-header {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-faint);
+      padding: 8px 12px 4px;
+    }
+
+    .model-picker-item {
+      display: flex;
+      flex-direction: column;
+      padding: 7px 12px;
+      margin: 1px 4px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .model-picker-item:hover { background: var(--bg-hover); }
+
+    .model-picker-item.selected {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .model-picker-item.selected .model-picker-meta { color: var(--accent); opacity: 0.7; }
+
+    .model-picker-item-name {
+      font-size: 13px;
+      font-weight: 450;
+      color: inherit;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .model-picker-item.selected .model-picker-item-name::after {
+      content: ' \2713';
+      font-weight: 600;
+    }
+
+    .model-picker-meta {
+      font-size: 11px;
+      color: var(--text-faint);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .model-picker-add {
+      padding: 9px 12px;
+      border: none;
+      border-top: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 450;
+      font-family: var(--font);
+      text-align: left;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.12s;
+    }
+
+    .model-picker-add:hover { background: var(--bg-hover); color: var(--text); }
 
     .composer-add-model {
       display: none;
@@ -1103,26 +1212,34 @@
 
     .pending-file-remove:hover { opacity: 1; color: var(--danger); }
 
-    .web-search-label {
-      display: inline-block;
-      max-width: 0;
-      overflow: hidden;
-      white-space: nowrap;
-      font-size: 11px;
+    .web-search-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 10px 5px 8px;
+      border-radius: 999px;
+      border: none;
+      background: var(--bg-chip);
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 12px;
       font-weight: 450;
-      color: var(--accent);
-      opacity: 0;
-      transition: max-width 0.35s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease, margin-left 0.35s cubic-bezier(0.22, 1, 0.36, 1);
-      margin-left: 0;
-      vertical-align: middle;
-      line-height: 28px;
+      font-family: var(--font);
+      transition: background 0.12s, color 0.12s;
     }
 
-    .web-search-label.visible {
-      max-width: 120px;
-      opacity: 1;
-      margin-left: 4px;
+    .web-search-pill:hover {
+      color: var(--text-secondary);
+      background: var(--bg-hover);
     }
+
+    .web-search-pill.active-search {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .web-search-pill svg { width: 15px; height: 15px; flex-shrink: 0; }
+    .web-search-pill-label { white-space: nowrap; line-height: 1; }
 
     .send-btn {
       width: 30px;
@@ -1525,6 +1642,76 @@
 
     .setting-select:focus { border-color: var(--border-strong); }
     .setting-select option { background: #2a2a2a; color: var(--text); }
+
+    .provider-picker-wrap {
+      position: relative;
+      width: 100%;
+    }
+
+    .provider-picker-trigger {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border-soft);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      font-size: 13px;
+      font-family: var(--font);
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .provider-picker-trigger:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+    .provider-picker-chevron { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-faint); transition: transform 0.2s; }
+    .provider-picker-wrap.open .provider-picker-chevron { transform: rotate(180deg); }
+
+    .provider-picker-dropdown {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      margin-top: 2px;
+      max-height: 300px;
+      overflow-y: auto;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      z-index: 60;
+      padding: 4px;
+    }
+
+    .provider-picker-wrap.open .provider-picker-dropdown { display: block; }
+
+    .provider-option {
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: background 0.1s;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .provider-option:hover { background: var(--bg-hover); color: var(--text); }
+
+    .provider-option.selected {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .provider-option.selected::after {
+      content: '\2713';
+      font-weight: 600;
+    }
 
     .setting-input {
       width: 100%;
@@ -1940,11 +2127,21 @@
                   </svg>
                 </button>
                 <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
-                <button class="composer-icon-btn" type="button" title="Web search" aria-label="Toggle web search" id="webSearchBtn">
+                <button class="web-search-pill" id="webSearchBtn" type="button" title="Web search" aria-label="Toggle web search">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <span class="web-search-pill-label" id="webSearchLabel">Web search</span>
                 </button>
-                <span class="web-search-label" id="webSearchLabel">Web search on</span>
-                <select class="composer-model-select" id="composerModelSelect" title="Quick model switch" aria-label="Switch model"></select>
+                <div class="model-picker-wrap" id="modelPickerWrap">
+                  <button class="model-picker-trigger" id="modelPickerTrigger" type="button" title="Quick model switch" aria-label="Switch model">
+                    <span class="model-picker-trigger-label" id="modelPickerLabel">Model</span>
+                    <svg class="model-picker-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                  <div class="model-picker-dropdown" id="modelPickerDropdown">
+                    <input class="model-picker-search" id="modelPickerSearch" type="text" placeholder="Search models..." autocomplete="off" />
+                    <div class="model-picker-list" id="modelPickerList"></div>
+                    <button class="model-picker-add" id="modelPickerAdd" type="button">+ Add model...</button>
+                  </div>
+                </div>
               </div>
               <div class="composer-right">
 <button class="send-btn" id="sendBtn" disabled title="Send" aria-label="Send message">
@@ -1996,7 +2193,7 @@
         <div class="setting-group">
           <label class="setting-label" for="settingProvider">Provider</label>
           <p class="setting-desc">Select your AI provider to populate available models.</p>
-          <select class="setting-select" id="settingProvider">
+          <select class="setting-select" id="settingProvider" hidden>
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
             <option value="google">Google AI Studio</option>
@@ -2010,6 +2207,13 @@
             <option value="openrouter">OpenRouter</option>
             <option value="custom">Custom (OpenAI-compatible)</option>
           </select>
+          <div class="provider-picker-wrap" id="providerPickerWrap">
+            <button class="provider-picker-trigger" id="providerPickerTrigger" type="button">
+              <span id="providerPickerLabel">OpenAI</span>
+              <svg class="provider-picker-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="provider-picker-dropdown" id="providerPickerDropdown"></div>
+          </div>
         </div>
 
         <div class="setting-group">
@@ -2617,39 +2821,87 @@
       }
 
       function populateComposerModelSelect() {
-        var sel = $('composerModelSelect');
-        if (!sel) return;
-        sel.innerHTML = '';
+        var list = $('modelPickerList');
+        if (!list) return;
+        list.innerHTML = '';
         var models = getAllModelsForComposer();
         var currentModel = settings.model === '__custom__' ? settings.customModelId : settings.model;
+        var providerCfg = getProviderConfig(settings.provider);
+        var groupName = providerCfg ? providerCfg.name : settings.provider;
+
+        var header = document.createElement('div');
+        header.className = 'model-picker-group-header';
+        header.textContent = groupName;
+        list.appendChild(header);
+
         var found = false;
         for (var i = 0; i < models.length; i++) {
-          var opt = document.createElement('option');
-          opt.value = models[i].id;
-          opt.textContent = models[i].name || models[i].id;
-          if (models[i].id === currentModel) { opt.selected = true; found = true; }
-          sel.appendChild(opt);
+          var item = document.createElement('div');
+          item.className = 'model-picker-item';
+          item.setAttribute('data-id', models[i].id);
+          item.setAttribute('data-name', (models[i].name || models[i].id).toLowerCase());
+          var nameEl = document.createElement('div');
+          nameEl.className = 'model-picker-item-name';
+          nameEl.textContent = models[i].name || models[i].id;
+          var metaEl = document.createElement('div');
+          metaEl.className = 'model-picker-meta';
+          metaEl.textContent = models[i].id;
+          item.appendChild(nameEl);
+          item.appendChild(metaEl);
+          if (models[i].id === currentModel) { item.classList.add('selected'); found = true; }
+          (function(mid) {
+            item.addEventListener('click', function() { selectModelFromPicker(mid); });
+          })(models[i].id);
+          list.appendChild(item);
         }
-        if (!found && models.length) { sel.value = models[0].id; }
-        var sep = document.createElement('option');
-        sep.disabled = true;
-        sep.textContent = '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500';
-        sel.appendChild(sep);
-        var addOpt = document.createElement('option');
-        addOpt.value = '__add__';
-        addOpt.textContent = '+ Add model...';
-        sel.appendChild(addOpt);
-        if (!found && !models.length) sel.value = '__add__';
+
+        updateModelPickerLabel(found ? currentModel : (models.length ? models[0].id : ''));
+        if (!found && models.length) {
+          selectModelFromPicker(models[0].id, true);
+        }
       }
 
-      function applyComposerModelChange() {
-        var sel = $('composerModelSelect');
-        if (!sel) return;
-        var val = sel.value;
+      function updateModelPickerLabel(modelId) {
+        var labelEl = $('modelPickerLabel');
+        if (!labelEl) return;
+        var models = getAllModelsForComposer();
+        var name = '';
+        for (var i = 0; i < models.length; i++) {
+          if (models[i].id === modelId) { name = models[i].name || models[i].id; break; }
+        }
+        labelEl.textContent = name || (modelId || 'Model');
+      }
+
+      function openModelPicker() {
+        var wrap = $('modelPickerWrap');
+        if (!wrap) return;
+        wrap.classList.add('open');
+        var search = $('modelPickerSearch');
+        if (search) { search.value = ''; filterModelPicker(''); setTimeout(function() { search.focus(); }, 10); }
+        var items = $('modelPickerList').querySelectorAll('.model-picker-item');
+        for (var i = 0; i < items.length; i++) { items[i].style.display = ''; }
+      }
+
+      function closeModelPicker() {
+        var wrap = $('modelPickerWrap');
+        if (wrap) wrap.classList.remove('open');
+      }
+
+      function filterModelPicker(query) {
+        var q = (query || '').toLowerCase();
+        var items = $('modelPickerList').querySelectorAll('.model-picker-item');
+        for (var i = 0; i < items.length; i++) {
+          var name = items[i].getAttribute('data-name') || '';
+          var id = items[i].getAttribute('data-id') || '';
+          var match = !q || name.indexOf(q) !== -1 || id.toLowerCase().indexOf(q) !== -1;
+          items[i].style.display = match ? '' : 'none';
+        }
+      }
+
+      function selectModelFromPicker(val, silent) {
         if (val === '__add__') {
           $('composerAddModel').classList.add('visible');
           $('composerAddModelId').focus();
-          sel.value = settings.model === '__custom__' ? settings.customModelId : settings.model;
           return;
         }
         settings.model = val;
@@ -2669,8 +2921,75 @@
           }
         }
         saveSettings();
-
+        updateModelPickerLabel(val);
+        var list = $('modelPickerList');
+        if (list) {
+          var items = list.querySelectorAll('.model-picker-item');
+          for (var k = 0; k < items.length; k++) {
+            items[k].classList.toggle('selected', items[k].getAttribute('data-id') === val);
+          }
+        }
+        if (!silent) closeModelPicker();
         updateMetrics(null);
+      }
+
+      function applyComposerModelChange() {
+        var wrap = $('modelPickerWrap');
+        if (wrap) return;
+      }
+
+      function populateProviderPicker() {
+        var dropdown = $('providerPickerDropdown');
+        if (!dropdown) return;
+        dropdown.innerHTML = '';
+        var keys = Object.keys(PROVIDERS);
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var cfg = PROVIDERS[key];
+          var opt = document.createElement('div');
+          opt.className = 'provider-option';
+          opt.setAttribute('data-key', key);
+          opt.textContent = cfg.name || key;
+          if (key === settings.provider) opt.classList.add('selected');
+          (function(k) {
+            opt.addEventListener('click', function(e) { e.stopPropagation(); selectProviderFromPicker(k); });
+          })(key);
+          dropdown.appendChild(opt);
+        }
+        updateProviderPickerLabel();
+      }
+
+      function updateProviderPickerLabel() {
+        var label = $('providerPickerLabel');
+        if (!label) return;
+        var cfg = getProviderConfig(settings.provider);
+        label.textContent = cfg ? cfg.name : settings.provider;
+      }
+
+      function openProviderPicker() {
+        var wrap = $('providerPickerWrap');
+        if (!wrap) return;
+        wrap.classList.add('open');
+        populateProviderPicker();
+      }
+
+      function closeProviderPicker() {
+        var wrap = $('providerPickerWrap');
+        if (wrap) wrap.classList.remove('open');
+      }
+
+      function selectProviderFromPicker(key) {
+        settings.provider = key;
+        var sel = $('settingProvider');
+        if (sel) sel.value = key;
+        var models = getAvailableModels(key);
+        settings.model = models.length ? models[0].id : '';
+        toggleCustomSection();
+        updateProviderPlaceholder();
+        updateProviderURLInfo();
+        populateComposerModelSelect();
+        updateProviderPickerLabel();
+        closeProviderPicker();
       }
 
       function hideComposerAddModel() {
@@ -3337,6 +3656,7 @@
 
         updateProviderPlaceholder();
         updateProviderURLInfo();
+        updateProviderPickerLabel();
       }
 
       function toggleCustomSection() {
@@ -3747,13 +4067,20 @@
       settingsModal.addEventListener('click', function(e) { if (e.target === settingsModal) closeSettings(); });
 
       $('settingProvider').addEventListener('change', function(e) {
-        settings.provider = e.target.value;
-        var models = getAvailableModels(settings.provider);
-        settings.model = models.length ? models[0].id : '';
-        toggleCustomSection();
-        updateProviderPlaceholder();
-        updateProviderURLInfo();
-        populateComposerModelSelect();
+        selectProviderFromPicker(e.target.value);
+      });
+
+      $('providerPickerTrigger').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var wrap = $('providerPickerWrap');
+        if (wrap.classList.contains('open')) closeProviderPicker();
+        else openProviderPicker();
+      });
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest('.provider-picker-wrap')) closeProviderPicker();
+      });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') { closeProviderPicker(); closeModelPicker(); }
       });
 
       function updateSliderFill(slider) {
@@ -3797,7 +4124,7 @@
         var btn = $('webSearchBtn');
         var label = $('webSearchLabel');
         btn.classList.toggle('active-search', webSearch);
-        label.classList.toggle('visible', webSearch);
+        if (label) label.textContent = webSearch ? 'Web search on' : 'Web search';
         btn.title = webSearch ? 'Web search: on' : 'Web search';
         btn.setAttribute('aria-label', btn.title);
       }
@@ -3887,8 +4214,34 @@
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!(activeChatId in streamControllers)) sendMessage(); }
       });
 
-      $('composerModelSelect').addEventListener('change', applyComposerModelChange);
-      $('composerModelSelect').addEventListener('click', function() { if (!getAllModelsForComposer().length) { populateComposerModelSelect(); } });
+      $('modelPickerTrigger').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var wrap = $('modelPickerWrap');
+        if (wrap.classList.contains('open')) { closeModelPicker(); }
+        else {
+          if (!getAllModelsForComposer().length) populateComposerModelSelect();
+          openModelPicker();
+        }
+      });
+      $('modelPickerSearch').addEventListener('input', function(e) { filterModelPicker(e.target.value); });
+      $('modelPickerSearch').addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') { e.preventDefault(); closeModelPicker(); $('modelPickerTrigger').focus(); }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          var visible = $('modelPickerList').querySelectorAll('.model-picker-item');
+          for (var i = 0; i < visible.length; i++) {
+            if (visible[i].style.display !== 'none') { selectModelFromPicker(visible[i].getAttribute('data-id')); break; }
+          }
+        }
+      });
+      $('modelPickerAdd').addEventListener('click', function(e) {
+        e.stopPropagation();
+        closeModelPicker();
+        selectModelFromPicker('__add__');
+      });
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest('.model-picker-wrap')) closeModelPicker();
+      });
       $('composerAddModelSave').addEventListener('click', saveQuickCustomModel);
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });

@@ -2737,7 +2737,9 @@
           incognito: !!asIncognito,
         };
         if (asIncognito) { incognitoChat = chat; }
-        else { chats.unshift(chat); activeChatId = chat.id; persistChats(); }
+        else { chats.unshift(chat); }
+        activeChatId = chat.id;
+        persistChats();
         return chat;
       }
 
@@ -3483,12 +3485,15 @@
       }
 
       function updateLastAssistantMessage(msg) {
+        var nearBottom = messagesWrap.scrollTop + messagesWrap.clientHeight >= messagesWrap.scrollHeight - 80;
+
         var last = messagesEl.querySelector('.message.assistant:last-child');
         if (!last) {
           var chat = getActiveChat();
           var idx = chat ? chat.messages.length - 1 : 0;
           messagesEl.appendChild(buildMessageEl(msg, true, idx));
-          scrollToBottom(); return;
+          if (nearBottom) { scrolledUp = false; scrollToBottom(); }
+          return;
         }
         var body = last.querySelector('.message-body');
         var live = body.querySelector('.thinking-row');
@@ -3519,7 +3524,14 @@
           content.classList.add('streaming-cursor');
           if (live) { stopThinkingAnim(); live.remove(); }
         }
-        scrollToBottom();
+
+        if (nearBottom) {
+          scrolledUp = false;
+          scrollToBottom();
+        } else {
+          scrolledUp = true;
+          updateScrolledUp();
+        }
       }
 
       function finishStreamingUI() {

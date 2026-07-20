@@ -1095,7 +1095,9 @@
 
     .model-picker-item {
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
       padding: 7px 12px;
       margin: 1px 4px;
       border-radius: 8px;
@@ -1111,6 +1113,13 @@
     }
 
     .model-picker-item.selected .model-picker-meta { color: var(--accent); opacity: 0.7; }
+
+    .model-picker-item-content {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-width: 0;
+    }
 
     .model-picker-item-name {
       font-size: 13px;
@@ -1132,6 +1141,58 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .model-picker-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: 8px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.12s;
+    }
+
+    .model-picker-item:hover .model-picker-item-actions,
+    .model-picker-item:focus-within .model-picker-item-actions {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .model-picker-item-btn {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.12s, color 0.12s;
+      padding: 0;
+    }
+
+    .model-picker-item-btn:hover {
+      background: rgba(255,255,255,0.08);
+      color: var(--text-secondary);
+    }
+
+    .model-picker-item-btn.delete-btn:hover {
+      background: rgba(212,120,120,0.15);
+      color: var(--danger);
+    }
+
+    .model-picker-item-btn svg {
+      width: 13px;
+      height: 13px;
+    }
+
+    .model-picker-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 4px 8px;
     }
 
     .model-picker-add {
@@ -1976,6 +2037,12 @@
 
       /* Attach button sizing */
       .composer-icon-btn { width: 28px; height: 28px; }
+
+      /* Actions visible on touch screens */
+      .model-picker-item-actions {
+        opacity: 1 !important;
+        pointer-events: auto !important;
+      }
     }
 
     @media (min-width: 769px) {
@@ -2612,6 +2679,7 @@
       var composerArea = $('composerArea');
       var composerNote = $('composerNote');
       var incognitoBtn = $('incognitoBtn');
+      var editingModelId = null;
 
       function loadJSON(key, fallback) {
         try { var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
@@ -2831,50 +2899,187 @@
         if (window.innerWidth <= 768) collapseSidebar();
       }
 
+      function getCustomModelsForCurrentProvider() {
+        if (settings.provider === 'custom') {
+          return settings.customModels || [];
+        } else {
+          var res = [];
+          var quick = settings.quickCustomModels || [];
+          for (var i = 0; i < quick.length; i++) {
+            if (quick[i].provider === settings.provider) {
+              res.push(quick[i]);
+            }
+          }
+          return res;
+        }
+      }
+
       function getAllModelsForComposer() {
         var models = getAvailableModels(settings.provider);
-        var quickModels = (settings.quickCustomModels || []).filter(function(m) { return m.provider === settings.provider; });
+        var quickModels = getCustomModelsForCurrentProvider();
+        if (settings.provider === 'custom') {
+          return models;
+        }
         return models.concat(quickModels);
+      }
+
+      function createModelPickerItem(model, isCustom, currentModelId) {
+        var item = document.createElement('div');
+        item.className = 'model-picker-item' + (isCustom ? ' is-custom' : '');
+        item.setAttribute('data-id', model.id);
+        item.setAttribute('data-name', (model.name || model.id).toLowerCase());
+
+        var content = document.createElement('div');
+        content.className = 'model-picker-item-content';
+
+        var nameEl = document.createElement('div');
+        nameEl.className = 'model-picker-item-name';
+        nameEl.textContent = model.name || model.id;
+
+        var metaEl = document.createElement('div');
+        metaEl.className = 'model-picker-meta';
+        metaEl.textContent = model.id;
+
+        content.appendChild(nameEl);
+        content.appendChild(metaEl);
+        item.appendChild(content);
+
+        if (model.id === currentModelId) {
+          item.classList.add('selected');
+        }
+
+        if (isCustom) {
+          var actions = document.createElement('div');
+          actions.className = 'model-picker-item-actions';
+
+          var editBtn = document.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'model-picker-item-btn edit-btn';
+          editBtn.title = 'Edit';
+          editBtn.innerHTML = ICONS.edit;
+          editBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            editCustomModel(model);
+          });
+
+          var deleteBtn = document.createElement('button');
+          deleteBtn.type = 'button';
+          deleteBtn.className = 'model-picker-item-btn delete-btn';
+          deleteBtn.title = 'Delete';
+          deleteBtn.innerHTML = ICONS.trash;
+          deleteBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            deleteCustomModel(model.id);
+          });
+
+          actions.appendChild(editBtn);
+          actions.appendChild(deleteBtn);
+          item.appendChild(actions);
+        }
+
+        item.addEventListener('click', function() {
+          selectModelFromPicker(model.id);
+        });
+
+        return item;
+      }
+
+      function deleteCustomModel(modelId) {
+        if (settings.provider === 'custom') {
+          settings.customModels = (settings.customModels || []).filter(function(m) { return m.id !== modelId; });
+        } else {
+          settings.quickCustomModels = (settings.quickCustomModels || []).filter(function(m) {
+            return !(m.provider === settings.provider && m.id === modelId);
+          });
+        }
+
+        if (settings.model === modelId) {
+          var providerCfg = getProviderConfig(settings.provider);
+          var presetModels = providerCfg ? (providerCfg.models || []) : [];
+          if (presetModels.length) {
+            settings.model = presetModels[0].id;
+          } else {
+            var customs = getCustomModelsForCurrentProvider();
+            if (customs.length) {
+              settings.model = customs[0].id;
+            } else {
+              settings.model = '';
+            }
+          }
+        }
+
+        saveSettings();
+        populateComposerModelSelect();
+        updateMetrics(null);
+        showToast('Model deleted', 'info');
+      }
+
+      function editCustomModel(model) {
+        closeModelPicker();
+        editingModelId = model.id;
+
+        var drawer = $('composerAddModel');
+        var head = drawer.querySelector('.composer-add-model-head');
+        if (head) head.textContent = 'Edit custom model';
+
+        $('composerAddModelId').value = model.id;
+        $('composerAddModelName').value = model.name || '';
+        $('composerAddModelCtx').value = model.ctx || 131072;
+
+        drawer.classList.add('visible');
+        $('composerAddModelId').focus();
       }
 
       function populateComposerModelSelect() {
         var list = $('modelPickerList');
         if (!list) return;
         list.innerHTML = '';
-        var models = getAllModelsForComposer();
+
         var currentModel = settings.model === '__custom__' ? settings.customModelId : settings.model;
         var providerCfg = getProviderConfig(settings.provider);
-        var groupName = providerCfg ? providerCfg.name : settings.provider;
+        var providerName = providerCfg ? providerCfg.name : settings.provider;
 
-        var header = document.createElement('div');
-        header.className = 'model-picker-group-header';
-        header.textContent = groupName;
-        list.appendChild(header);
+        var customModels = getCustomModelsForCurrentProvider();
+        var presetModels = providerCfg ? (providerCfg.models || []) : [];
 
         var found = false;
-        for (var i = 0; i < models.length; i++) {
-          var item = document.createElement('div');
-          item.className = 'model-picker-item';
-          item.setAttribute('data-id', models[i].id);
-          item.setAttribute('data-name', (models[i].name || models[i].id).toLowerCase());
-          var nameEl = document.createElement('div');
-          nameEl.className = 'model-picker-item-name';
-          nameEl.textContent = models[i].name || models[i].id;
-          var metaEl = document.createElement('div');
-          metaEl.className = 'model-picker-meta';
-          metaEl.textContent = models[i].id;
-          item.appendChild(nameEl);
-          item.appendChild(metaEl);
-          if (models[i].id === currentModel) { item.classList.add('selected'); found = true; }
-          (function(mid) {
-            item.addEventListener('click', function() { selectModelFromPicker(mid); });
-          })(models[i].id);
-          list.appendChild(item);
+
+        if (customModels.length > 0) {
+          var customHeader = document.createElement('div');
+          customHeader.className = 'model-picker-group-header';
+          customHeader.textContent = 'Custom';
+          list.appendChild(customHeader);
+
+          for (var i = 0; i < customModels.length; i++) {
+            var item = createModelPickerItem(customModels[i], true, currentModel);
+            if (customModels[i].id === currentModel) found = true;
+            list.appendChild(item);
+          }
+
+          if (presetModels.length > 0) {
+            var divider = document.createElement('div');
+            divider.className = 'model-picker-divider';
+            list.appendChild(divider);
+          }
         }
 
-        updateModelPickerLabel(found ? currentModel : (models.length ? models[0].id : ''));
-        if (!found && models.length) {
-          selectModelFromPicker(models[0].id, true);
+        if (presetModels.length > 0) {
+          var presetHeader = document.createElement('div');
+          presetHeader.className = 'model-picker-group-header';
+          presetHeader.textContent = providerName + ' Presets';
+          list.appendChild(presetHeader);
+
+          for (var j = 0; j < presetModels.length; j++) {
+            var item = createModelPickerItem(presetModels[j], false, currentModel);
+            if (presetModels[j].id === currentModel) found = true;
+            list.appendChild(item);
+          }
+        }
+
+        var labelModel = found ? currentModel : (customModels.length ? customModels[0].id : (presetModels.length ? presetModels[0].id : ''));
+        updateModelPickerLabel(labelModel);
+        if (!found && labelModel) {
+          selectModelFromPicker(labelModel, true);
         }
       }
 
@@ -2917,7 +3122,11 @@
 
       function selectModelFromPicker(val, silent) {
         if (val === '__add__') {
-          $('composerAddModel').classList.add('visible');
+          editingModelId = null;
+          var drawer = $('composerAddModel');
+          var head = drawer.querySelector('.composer-add-model-head');
+          if (head) head.textContent = 'Add custom model';
+          drawer.classList.add('visible');
           $('composerAddModelId').focus();
           return;
         }
@@ -3009,34 +3218,82 @@
         $('composerAddModelId').value = '';
         $('composerAddModelName').value = '';
         $('composerAddModelCtx').value = '131072';
+        editingModelId = null;
+        var head = $('composerAddModel').querySelector('.composer-add-model-head');
+        if (head) head.textContent = 'Add custom model';
       }
 
       function saveQuickCustomModel() {
         var id = $('composerAddModelId').value.trim();
-        if (!id) return;
+        if (!id) { showToast('Model ID is required'); return; }
         var name = $('composerAddModelName').value.trim() || id;
         var ctx = parseInt($('composerAddModelCtx').value, 10) || 131072;
-        if (!settings.quickCustomModels) settings.quickCustomModels = [];
-        var exists = false;
-        for (var i = 0; i < settings.quickCustomModels.length; i++) {
-          if (settings.quickCustomModels[i].id === id && settings.quickCustomModels[i].provider === settings.provider) {
-            settings.quickCustomModels[i].name = name;
-            settings.quickCustomModels[i].ctx = ctx;
-            exists = true;
-            break;
+
+        if (settings.provider === 'custom') {
+          if (!settings.customModels) settings.customModels = [];
+          if (editingModelId !== null) {
+            var updated = false;
+            for (var i = 0; i < settings.customModels.length; i++) {
+              if (settings.customModels[i].id === editingModelId) {
+                settings.customModels[i].id = id;
+                settings.customModels[i].name = name;
+                settings.customModels[i].ctx = ctx;
+                updated = true;
+                break;
+              }
+            }
+            if (!updated) settings.customModels.push({ id: id, name: name, ctx: ctx });
+          } else {
+            var exists = false;
+            for (var i = 0; i < settings.customModels.length; i++) {
+              if (settings.customModels[i].id === id) {
+                settings.customModels[i].name = name;
+                settings.customModels[i].ctx = ctx;
+                exists = true;
+                break;
+              }
+            }
+            if (!exists) settings.customModels.push({ id: id, name: name, ctx: ctx });
+          }
+        } else {
+          if (!settings.quickCustomModels) settings.quickCustomModels = [];
+          if (editingModelId !== null) {
+            var updated = false;
+            for (var i = 0; i < settings.quickCustomModels.length; i++) {
+              if (settings.quickCustomModels[i].id === editingModelId && settings.quickCustomModels[i].provider === settings.provider) {
+                settings.quickCustomModels[i].id = id;
+                settings.quickCustomModels[i].name = name;
+                settings.quickCustomModels[i].ctx = ctx;
+                updated = true;
+                break;
+              }
+            }
+            if (!updated) settings.quickCustomModels.push({ provider: settings.provider, id: id, name: name, ctx: ctx });
+          } else {
+            var exists = false;
+            for (var i = 0; i < settings.quickCustomModels.length; i++) {
+              if (settings.quickCustomModels[i].id === id && settings.quickCustomModels[i].provider === settings.provider) {
+                settings.quickCustomModels[i].name = name;
+                settings.quickCustomModels[i].ctx = ctx;
+                exists = true;
+                break;
+              }
+            }
+            if (!exists) settings.quickCustomModels.push({ provider: settings.provider, id: id, name: name, ctx: ctx });
           }
         }
-        if (!exists) {
-          settings.quickCustomModels.push({ provider: settings.provider, id: id, name: name, ctx: ctx });
+
+        if (settings.model === editingModelId || settings.model === '') {
+          settings.model = id;
         }
-        settings.model = id;
         settings.customModelId = id;
         settings.customModelCtx = ctx;
+
         saveSettings();
         populateComposerModelSelect();
 
         updateMetrics(null);
-        showToast('Model added: ' + name, 'info');
+        showToast(editingModelId !== null ? 'Model updated' : 'Model added: ' + name, 'info');
         hideComposerAddModel();
       }
 
@@ -3721,11 +3978,30 @@
         settings.thinking = $('settingThinking').checked;
         settings.customBaseURL = $('settingCustomURL').value.trim();
         settings.systemPrompt = $('settingSystemPrompt').value.trim();
+
+        // Validate active model
+        var avail = getAvailableModels(settings.provider);
+        var found = false;
+        for (var i = 0; i < avail.length; i++) {
+          if (avail[i].id === settings.model) { found = true; break; }
+        }
+        if (!found) {
+          var quickModels = (settings.quickCustomModels || []).filter(function(m) { return m.provider === settings.provider; });
+          for (var j = 0; j < quickModels.length; j++) {
+            if (quickModels[j].id === settings.model) { found = true; break; }
+          }
+        }
+        if (!found) {
+          var all = getAllModelsForComposer();
+          settings.model = all.length ? all[0].id : '';
+        }
+
         saveSettings();
         settingsModal.classList.remove('open');
         setIncognitoUI(incognito);
 
         updateComposerNote();
+        populateComposerModelSelect();
         showToast('Settings saved', 'info');
       }
 

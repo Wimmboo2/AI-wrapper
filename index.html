@@ -307,11 +307,27 @@
       background: var(--incognito-soft);
     }
 
-    .chat-item-title {
+    .chat-item-info {
       flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-item-title {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .chat-item-snippet {
+      font-size: 11px;
+      color: var(--text-faint);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 1px;
+      opacity: 0.85;
     }
 
     .chat-item-icon {
@@ -2088,7 +2104,7 @@
       </nav>
 
       <div class="sidebar-search" id="sidebarSearchWrap">
-        <input type="text" class="sidebar-search-input" id="sidebarSearchInput" placeholder="Search chats..." autocomplete="off" />
+        <input type="text" class="sidebar-search-input" id="sidebarSearchInput" placeholder="Search chats and messages..." autocomplete="off" />
         <button class="sidebar-search-clear" id="sidebarSearchClear" type="button" aria-label="Clear search">&times;</button>
       </div>
 
@@ -2409,6 +2425,63 @@
     (function () {
       'use strict';
 
+      // ---- IndexedDB Storage Layer ----
+      var DB_NAME = 'omni_db';
+      var DB_VERSION = 1;
+      var STORE_NAME = 'chats';
+
+      function openDB() {
+        return new Promise(function(resolve, reject) {
+          var req = indexedDB.open(DB_NAME, DB_VERSION);
+          req.onupgradeneeded = function(e) {
+            var db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+              db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            }
+          };
+          req.onsuccess = function(e) { resolve(e.target.result); };
+          req.onerror = function(e) { reject(e.target.error); };
+        });
+      }
+
+      function dbPutChat(chat) {
+        if (!chat || !chat.id || chat.incognito) return Promise.resolve();
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readwrite');
+            tx.objectStore(STORE_NAME).put(chat);
+            tx.oncomplete = resolve;
+            tx.onerror = function() { reject(tx.error); };
+          });
+        }).catch(function(err) { console.error('IndexedDB put error:', err); });
+      }
+
+      function dbDeleteChat(id) {
+        if (!id) return Promise.resolve();
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readwrite');
+            tx.objectStore(STORE_NAME).delete(id);
+            tx.oncomplete = resolve;
+            tx.onerror = function() { reject(tx.error); };
+          });
+        }).catch(function(err) { console.error('IndexedDB delete error:', err); });
+      }
+
+      function dbGetAllChats() {
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readonly');
+            var req = tx.objectStore(STORE_NAME).getAll();
+            req.onsuccess = function() { resolve(req.result || []); };
+            req.onerror = function() { reject(req.error); };
+          });
+        }).catch(function(err) {
+          console.error('IndexedDB getAll error:', err);
+          return [];
+        });
+      }
+
       var PROVIDERS = {
         openai: {
           name: 'OpenAI',
@@ -2658,8 +2731,17 @@
       var settings = loadJSON('omni_settings', DEFAULT_SETTINGS);
       settings = mergeSettings(settings);
 
-      var chats = loadJSON('omni_chats', []);
+      var chats = [];
       var activeChatId = localStorage.getItem('omni_active_chat') || null;
+
+      function persistChats(changedChat) {
+        if (activeChatId && !incognito) {
+          localStorage.setItem('omni_active_chat', activeChatId);
+        }
+        if (changedChat && !changedChat.incognito) {
+          dbPutChat(changedChat);
+        }
+      }
       var streamControllers = {};
       var sidebarCollapsed = localStorage.getItem('omni_sidebar') === 'collapsed';
       var incognito = false;
@@ -2700,13 +2782,6 @@
         localStorage.setItem('omni_settings', JSON.stringify(settings));
       }
 
-      function persistChats() {
-        var durable = chats.filter(function(c) { return !c.incognito; });
-        localStorage.setItem('omni_chats', JSON.stringify(durable));
-        if (activeChatId && !incognito) {
-          localStorage.setItem('omni_active_chat', activeChatId);
-        }
-      }
 
       function uid() {
         return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -2741,6 +2816,7 @@
               data.chats.forEach(function(ic) {
                 if (chats.some(function(c) { return c.id === ic.id; })) return;
                 chats.unshift(ic);
+                dbPutChat(ic);
                 imported++;
               });
               if (imported) {
@@ -2807,7 +2883,7 @@
         if (asIncognito) { incognitoChat = chat; }
         else { chats.unshift(chat); }
         activeChatId = chat.id;
-        persistChats();
+        persistChats(chat);
         return chat;
       }
 
@@ -2817,6 +2893,7 @@
         if (!incognito && activeChatId === id) {
           activeChatId = chats.length ? chats[0].id : null;
         }
+        dbDeleteChat(id);
         persistChats();
         renderAll();
       }
@@ -2829,7 +2906,7 @@
       function updateChatTitle(chat, firstMessage) {
         if (chat.title === 'New chat' || chat.title === 'Incognito chat') {
           chat.title = deriveTitle(firstMessage);
-          if (!chat.incognito) persistChats();
+          if (!chat.incognito) persistChats(chat);
           renderChatList();
         }
       }
@@ -3346,12 +3423,20 @@
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'chat-item active incognito-chat';
-            btn.innerHTML = ICONS.incognito + '<span class="chat-item-title">' + escapeHtml(incognitoChat.title) + '</span>';
+            btn.innerHTML = ICONS.incognito + '<div class="chat-item-info"><span class="chat-item-title">' + escapeHtml(incognitoChat.title) + '</span></div>';
             list.appendChild(btn);
           }
           return;
         }
-        var filtered = searchQ ? chats.filter(function(c) { return c.title.toLowerCase().indexOf(searchQ) !== -1; }) : chats;
+        var filtered = searchQ ? chats.filter(function(c) {
+          if (c.title.toLowerCase().indexOf(searchQ) !== -1) return true;
+          for (var i = 0; i < c.messages.length; i++) {
+            var content = c.messages[i].content;
+            if (typeof content === 'string' && content.toLowerCase().indexOf(searchQ) !== -1) return true;
+          }
+          return false;
+        }) : chats;
+
         if (!filtered.length) {
           var empty = document.createElement('div');
           empty.className = 'empty-list';
@@ -3363,14 +3448,41 @@
           var btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'chat-item' + (chat.id === activeChatId ? ' active' : '');
+
+          var infoWrap = document.createElement('div');
+          infoWrap.className = 'chat-item-info';
+
           var titleSpan = document.createElement('span');
           titleSpan.className = 'chat-item-title';
           titleSpan.textContent = chat.title;
+          infoWrap.appendChild(titleSpan);
+
+          if (searchQ && chat.title.toLowerCase().indexOf(searchQ) === -1) {
+            for (var m = 0; m < chat.messages.length; m++) {
+              var content = chat.messages[m].content;
+              if (typeof content === 'string') {
+                var idx = content.toLowerCase().indexOf(searchQ);
+                if (idx !== -1) {
+                  var snippetEl = document.createElement('span');
+                  snippetEl.className = 'chat-item-snippet';
+                  var start = Math.max(0, idx - 20);
+                  var end = Math.min(content.length, idx + searchQ.length + 30);
+                  snippetEl.textContent = (start > 0 ? '...' : '') +
+                    content.slice(start, end).replace(/\s+/g, ' ') +
+                    (end < content.length ? '...' : '');
+                  infoWrap.appendChild(snippetEl);
+                  break;
+                }
+              }
+            }
+          }
+
           var delSpan = document.createElement('span');
           delSpan.className = 'chat-item-del';
           delSpan.title = 'Delete';
           delSpan.innerHTML = ICONS.trash;
-          btn.appendChild(titleSpan);
+
+          btn.appendChild(infoWrap);
           if (chat.id in streamControllers) {
             var dot = document.createElement('span');
             dot.className = 'chat-streaming-indicator';
@@ -3678,7 +3790,7 @@
             sendMessage();
           } else {
             msg.content = next;
-            if (!chat.incognito) persistChats();
+            if (!chat.incognito) persistChats(chat);
             renderMessages();
             placeComposer();
           }
@@ -4235,7 +4347,7 @@
           chat.metrics = localMetrics;
           assistantMsg._inTokens = localMetrics.input_tokens;
           assistantMsg._outTokens = localMetrics.output_tokens;
-          if (!chat.incognito) persistChats();
+          if (!chat.incognito) persistChats(chat);
           if (isActive()) {
             finishStreamingUI();
             updateMetrics(localMetrics);
@@ -4256,7 +4368,7 @@
             updateLastAssistantMessage(assistantMsg);
             finishStreamingUI();
           }
-          if (!chat.incognito) persistChats();
+          if (!chat.incognito) persistChats(chat);
         } finally {
           delete streamControllers[chat.id];
           if (isActive()) {
@@ -4357,7 +4469,11 @@
       incognitoBtn.addEventListener('click', toggleIncognito);
       $('exportChatsBtn').addEventListener('click', exportChats);
       $('importChatsBtn').addEventListener('click', importChats);
-      $('sidebarSearchInput').addEventListener('input', function() { renderChatList(); });
+      var searchDebounce = null;
+      $('sidebarSearchInput').addEventListener('input', function() {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(function() { renderChatList(); }, 150);
+      });
       $('sidebarSearchInput').addEventListener('keydown', function(e) { if (e.key === 'Escape') { $('sidebarSearchInput').value = ''; renderChatList(); } });
       $('sidebarSearchClear').addEventListener('click', function() { $('sidebarSearchInput').value = ''; renderChatList(); composerInput.focus(); });
 
@@ -4569,21 +4685,39 @@
       }
 
       function init() {
-        if (activeChatId && !chats.some(function(c) { return c.id === activeChatId; })) {
-          activeChatId = chats.length ? chats[0].id : null;
-        }
-        chats = chats.filter(function(c) { return !c.incognito; }).map(function(c) { c.incognito = false; return c; });
-        persistChats();
+        dbGetAllChats().then(function(loaded) {
+          if (!loaded || !loaded.length) {
+            var legacy = loadJSON('omni_chats', []);
+            if (legacy && legacy.length) {
+              chats = legacy;
+              var promises = legacy.map(function(c) { return dbPutChat(c); });
+              Promise.all(promises).then(function() {
+                try { localStorage.removeItem('omni_chats'); } catch (_) {}
+              });
+            } else {
+              chats = [];
+            }
+          } else {
+            chats = loaded;
+          }
 
-        applySidebarState();
-        setIncognitoUI(false);
-        renderAll();
-        syncSettingsUI();
-        updateSendBtn();
+          chats = chats.filter(function(c) { return !c.incognito; }).map(function(c) { c.incognito = false; return c; });
+          chats.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
 
-        updateComposerNote();
-        populateComposerModelSelect();
-        composerInput.focus();
+          if (activeChatId && !chats.some(function(c) { return c.id === activeChatId; })) {
+            activeChatId = chats.length ? chats[0].id : null;
+          }
+
+          applySidebarState();
+          setIncognitoUI(false);
+          renderAll();
+          syncSettingsUI();
+          updateSendBtn();
+
+          updateComposerNote();
+          populateComposerModelSelect();
+          composerInput.focus();
+        });
       }
 
       init();

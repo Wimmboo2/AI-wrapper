@@ -2040,15 +2040,18 @@
       }
       .model-picker-trigger-label { max-width: 95px; }
 
-      /* Model picker dropdown: full-width on mobile */
+      /* Model picker dropdown: anchored above trigger on mobile */
       .model-picker-dropdown {
-        position: fixed;
-        left: 10px;
-        right: 10px;
-        bottom: 80px;
-        width: auto;
-        max-height: 50vh;
-        border-radius: 16px;
+        position: absolute;
+        bottom: 100%;
+        left: 0;
+        right: auto;
+        margin-bottom: 6px;
+        width: min(300px, calc(100vw - 32px));
+        max-height: min(300px, 45vh);
+        border-radius: 14px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+        z-index: 100;
       }
 
       /* Attach button sizing */

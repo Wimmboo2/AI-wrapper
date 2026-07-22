@@ -3742,7 +3742,7 @@
       }
 
       function updateLastAssistantMessage(msg) {
-        var nearBottom = messagesWrap.scrollTop + messagesWrap.clientHeight >= messagesWrap.scrollHeight - 80;
+        var nearBottom = !isTouching && (messagesWrap.scrollTop + messagesWrap.clientHeight >= messagesWrap.scrollHeight - 15);
 
         var last = messagesEl.querySelector('.message.assistant:last-child');
         if (!last) {
@@ -4304,13 +4304,18 @@
       }
 
       var scrolledUp = false;
+      var isTouching = false;
+      messagesWrap.addEventListener('touchstart', function() { isTouching = true; }, { passive: true });
+      messagesWrap.addEventListener('touchend', function() { isTouching = false; }, { passive: true });
+      messagesWrap.addEventListener('touchcancel', function() { isTouching = false; }, { passive: true });
+
       function scrollToBottom() {
-        if (scrolledUp) return;
+        if (scrolledUp || isTouching) return;
         requestAnimationFrame(function() { messagesWrap.scrollTop = messagesWrap.scrollHeight; });
       }
 
       function updateScrolledUp() {
-        var nearBottom = messagesWrap.scrollTop + messagesWrap.clientHeight >= messagesWrap.scrollHeight - 50;
+        var nearBottom = messagesWrap.scrollTop + messagesWrap.clientHeight >= messagesWrap.scrollHeight - 15;
         scrolledUp = !nearBottom;
         var btn = $('jumpLatestBtn');
         if (btn) {

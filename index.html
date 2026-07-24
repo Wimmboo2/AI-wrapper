@@ -2040,18 +2040,72 @@
       }
       .model-picker-trigger-label { max-width: 95px; }
 
-      /* Model picker dropdown: anchored above trigger on mobile */
+    .model-picker-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 90;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    .model-picker-backdrop.visible {
+      display: block;
+      opacity: 1;
+    }
+
+    @media (max-width: 768px) {
+      /* Model picker dropdown: mobile bottom sheet */
       .model-picker-dropdown {
-        position: absolute;
-        bottom: 100%;
+        position: fixed;
+        bottom: 0;
         left: 0;
-        right: auto;
-        margin-bottom: 6px;
-        width: min(300px, calc(100vw - 32px));
-        max-height: min(300px, 45vh);
-        border-radius: 14px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+        right: 0;
+        top: auto;
+        width: 100vw;
+        max-height: 70vh;
+        border-radius: 20px 20px 0 0;
+        border: 1px solid var(--border);
+        border-bottom: none;
+        background: var(--bg-elevated);
+        box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.55);
         z-index: 100;
+        padding-bottom: max(12px, env(safe-area-inset-bottom));
+        animation: slideUpSheet 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      @keyframes slideUpSheet {
+        from { transform: translateY(100%); }
+        to { transform: translateY(0); }
+      }
+
+      .model-picker-list {
+        max-height: calc(70vh - 90px);
+      }
+
+      .model-picker-search {
+        padding: 12px 14px;
+        font-size: 14px;
+      }
+
+      .model-picker-item {
+        padding: 10px 14px;
+        margin: 2px 6px;
+        border-radius: 10px;
+      }
+
+      .model-picker-item-name {
+        font-size: 14px;
+      }
+
+      .model-picker-meta {
+        font-size: 12px;
+      }
+
+      .model-picker-add {
+        padding: 12px 14px;
+        font-size: 13.5px;
       }
 
       /* Attach button sizing */
@@ -2138,6 +2192,7 @@
     </aside>
 
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+    <div class="model-picker-backdrop" id="modelPickerBackdrop"></div>
 
     <main class="main">
       <div class="topbar">
@@ -3178,8 +3233,16 @@
         var wrap = $('modelPickerWrap');
         if (!wrap) return;
         wrap.classList.add('open');
+        var backdrop = $('modelPickerBackdrop');
+        if (backdrop && window.innerWidth <= 768) backdrop.classList.add('visible');
         var search = $('modelPickerSearch');
-        if (search) { search.value = ''; filterModelPicker(''); setTimeout(function() { search.focus(); }, 10); }
+        if (search) {
+          search.value = '';
+          filterModelPicker('');
+          if (window.innerWidth > 768 && !('ontouchstart' in window)) {
+            setTimeout(function() { search.focus(); }, 10);
+          }
+        }
         var items = $('modelPickerList').querySelectorAll('.model-picker-item');
         for (var i = 0; i < items.length; i++) { items[i].style.display = ''; }
       }
@@ -3187,6 +3250,8 @@
       function closeModelPicker() {
         var wrap = $('modelPickerWrap');
         if (wrap) wrap.classList.remove('open');
+        var backdrop = $('modelPickerBackdrop');
+        if (backdrop) backdrop.classList.remove('visible');
       }
 
       function filterModelPicker(query) {
@@ -4664,6 +4729,7 @@
       document.addEventListener('click', function(e) {
         if (!e.target.closest('.model-picker-wrap')) closeModelPicker();
       });
+      $('modelPickerBackdrop').addEventListener('click', closeModelPicker);
       $('composerAddModelSave').addEventListener('click', saveQuickCustomModel);
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });

@@ -3040,11 +3040,11 @@
       };
 
       var DEFAULT_TEMPLATES = [
-        { key: 'code', label: 'Code Mode Assistant', prompt: 'Write clean, well-structured, production-ready code for ', enableCodeMode: true },
-        { key: 'web', label: 'Web Search', prompt: 'Search the web and provide up-to-date information on ', enableWebSearch: true },
+        { key: 'code', label: 'Code mode', prompt: '', enableCodeMode: true },
+        { key: 'web', label: 'Web search', prompt: '', enableWebSearch: true },
         { key: 'explain', label: 'Simple Explainer', prompt: 'Explain this topic simply and clearly, step by step: ' },
         { key: 'summarize', label: 'Summarize Text', prompt: 'Summarize the key takeaways and main points of the following text: ' },
-        { key: 'refactor', label: 'Code Refactor', prompt: 'Refactor and optimize the following code for better readability and performance: ', enableCodeMode: true },
+        { key: 'refactor', label: 'Code Refactor', prompt: '', enableCodeMode: true },
         { key: 'translate', label: 'Language Translation', prompt: 'Translate the following text into natural English: ' },
       ];
 
@@ -5235,7 +5235,7 @@
               '<span class="slash-item-key">/' + escapeHtml(item.key) + '</span>' +
               '<span class="slash-item-label">' + escapeHtml(item.label) + '</span>' +
               '</div>' +
-              '<span class="slash-item-prompt">' + escapeHtml(item.prompt) + '</span>';
+              '<span class="slash-item-prompt">' + (item.prompt ? escapeHtml(item.prompt) : 'Activate mode') + '</span>';
             el.addEventListener('click', function(e) {
               e.stopPropagation();
               applySlashTemplate(item);
@@ -5279,7 +5279,7 @@
       }
 
       function applySlashTemplate(item) {
-        composerInput.value = item.prompt;
+        composerInput.value = item.prompt || '';
         if (item.enableCodeMode) {
           codeMode = true;
           showToast('Code mode activated', 'info');
@@ -5294,7 +5294,9 @@
         autoResize();
         updateSendBtn();
         composerInput.focus();
-        composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
+        if (composerInput.value.length) {
+          composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
+        }
       }
 
       $('micBtn').addEventListener('click', toggleSpeechRecognition);

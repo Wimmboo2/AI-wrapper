@@ -1104,6 +1104,63 @@
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.12);
     }
 
+    .composer-active-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 2px 0 6px 0;
+    }
+
+    .active-mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: var(--font);
+      user-select: none;
+    }
+
+    .active-mode-badge.purple-mode {
+      background: rgba(168, 85, 247, 0.18);
+      color: #d8b4fe;
+      border: 1px solid rgba(168, 85, 247, 0.35);
+    }
+
+    .active-mode-badge.blue-mode {
+      background: rgba(59, 130, 246, 0.18);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.35);
+    }
+
+    .active-mode-badge svg {
+      width: 13px;
+      height: 13px;
+      flex-shrink: 0;
+    }
+
+    .active-mode-remove {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 15px;
+      height: 15px;
+      margin-left: 2px;
+      border-radius: 50%;
+      cursor: pointer;
+      opacity: 0.75;
+      font-size: 13px;
+      line-height: 1;
+      transition: opacity 0.12s, background 0.12s;
+    }
+
+    .active-mode-remove:hover {
+      opacity: 1;
+      background: rgba(255, 255, 255, 0.2);
+    }
+
     /* Slash Menu Popup */
     .slash-menu {
       display: none;
@@ -2518,6 +2575,7 @@
               autocomplete="off"
             ></textarea>
             <div id="pendingFilesList" class="pending-files-list"></div>
+            <div id="composerActiveTags" class="composer-active-tags"></div>
             <div class="composer-footer">
               <div class="composer-left">
                 <button class="composer-icon-btn" type="button" title="Attach file" aria-label="Attach file" id="attachBtn">
@@ -4507,11 +4565,20 @@
         if (!chat.incognito) persistChats();
 
         composerInput.value = '';
+        clearPendingFiles();
+        var currentWebSearch = webSearch;
+        var currentCodeMode = codeMode;
+        webSearch = false;
+        codeMode = false;
+        renderComposerActiveTags();
+
         var initialLabel = 'Thinking.';
-        if (webSearch && pendingFiles.length) {
+        if (currentWebSearch && pendingFiles.length) {
           initialLabel = 'Searching web \u00b7 Looking at images.';
-        } else if (webSearch) {
+        } else if (currentWebSearch) {
           initialLabel = 'Searching web.';
+        } else if (currentCodeMode) {
+          initialLabel = 'Writing code.';
         } else if (pendingFiles.length) {
           var hasImage = false;
           for (var pi2 = 0; pi2 < pendingFiles.length; pi2++) { if (pendingFiles[pi2].type.startsWith('image/')) { hasImage = true; break; } }
@@ -4552,6 +4619,9 @@
 
         var actualModel = settings.model === '__custom__' ? settings.customModelId : settings.model;
         var messages = history;
+        if (currentCodeMode) {
+          messages = [{ role: 'system', content: 'You are an expert lead software engineer. Write clean, complete, production-ready code. Do not use placeholders like "// rest of code here". Include proper imports, error handling, and concise comments.' }].concat(messages);
+        }
         if (settings.systemPrompt) {
           messages = [{ role: 'system', content: settings.systemPrompt }].concat(messages);
         }
@@ -4564,7 +4634,7 @@
           max_tokens: settings.maxTokens,
           stream: true,
           thinking: settings.thinking,
-          web_search: webSearch,
+          web_search: currentWebSearch,
         };
 
         if (settings.provider === 'custom') {
@@ -5178,16 +5248,47 @@
         }
       }
 
+      function renderComposerActiveTags() {
+        var container = $('composerActiveTags');
+        if (!container) return;
+        container.innerHTML = '';
+        if (codeMode) {
+          var tag = document.createElement('div');
+          tag.className = 'active-mode-badge purple-mode';
+          tag.innerHTML = ICONS.code + ' <span>Code mode</span> <span class="active-mode-remove" title="Remove mode">\u00d7</span>';
+          tag.querySelector('.active-mode-remove').addEventListener('click', function(e) {
+            e.stopPropagation();
+            codeMode = false;
+            renderComposerActiveTags();
+            showToast('Code mode disabled', 'info');
+          });
+          container.appendChild(tag);
+        }
+        if (webSearch) {
+          var tag = document.createElement('div');
+          tag.className = 'active-mode-badge blue-mode';
+          tag.innerHTML = ICONS.search + ' <span>Web search</span> <span class="active-mode-remove" title="Remove mode">\u00d7</span>';
+          tag.querySelector('.active-mode-remove').addEventListener('click', function(e) {
+            e.stopPropagation();
+            webSearch = false;
+            renderComposerActiveTags();
+            showToast('Web search disabled', 'info');
+          });
+          container.appendChild(tag);
+        }
+      }
+
       function applySlashTemplate(item) {
         composerInput.value = item.prompt;
         if (item.enableCodeMode) {
           codeMode = true;
-          showToast('Code mode activated (production code instructions)', 'info');
+          showToast('Code mode activated', 'info');
         }
         if (item.enableWebSearch) {
           webSearch = true;
           showToast('Web search activated', 'info');
         }
+        renderComposerActiveTags();
         var menu = $('slashMenu');
         if (menu) menu.classList.remove('visible');
         autoResize();

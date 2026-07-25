@@ -13,8 +13,10 @@
   <meta name="apple-mobile-web-app-title" content="Omni" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="application-name" content="Omni" />
-  <meta name="description" content="AI Chat Wrapper" />
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;450;500;550;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -737,10 +739,16 @@
       opacity: 0.9;
     }
 
-    .code-block-copy {
+    .code-block-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .code-block-btn {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       padding: 3px 8px;
       border-radius: 6px;
       border: none;
@@ -752,18 +760,73 @@
       transition: background 0.12s, color 0.12s;
     }
 
-    .code-block-copy:hover {
+    .code-block-btn:hover {
       background: rgba(255, 255, 255, 0.08);
       color: var(--text-secondary);
     }
 
-    .code-block-copy.copied {
+    .code-block-btn.copied {
       color: var(--success, #7aad8a);
     }
 
-    .code-block-copy svg {
+    .code-block-btn svg {
       width: 12px;
       height: 12px;
+    }
+
+    /* Code diff line highlighting */
+    .code-block-container pre code.language-diff .token.inserted,
+    .code-block-container pre code .diff-add {
+      color: #7aad8a;
+      background: rgba(122, 173, 138, 0.15);
+      display: block;
+    }
+
+    .code-block-container pre code.language-diff .token.deleted,
+    .code-block-container pre code .diff-del {
+      color: #d47878;
+      background: rgba(212, 120, 120, 0.15);
+      display: block;
+    }
+
+    /* Code preview modal */
+    .code-preview-modal {
+      max-width: 840px;
+      width: 94vw;
+      height: 85vh;
+    }
+
+    /* Code mode pill button */
+    .code-mode-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 10px 5px 8px;
+      border-radius: 999px;
+      border: none;
+      background: var(--bg-chip);
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 450;
+      font-family: var(--font);
+      transition: background 0.12s, color 0.12s;
+    }
+
+    .code-mode-pill:hover {
+      color: var(--text-secondary);
+      background: var(--bg-hover);
+    }
+
+    .code-mode-pill.active-code {
+      background: rgba(122, 173, 138, 0.16);
+      color: #7aad8a;
+    }
+
+    .code-mode-pill svg {
+      width: 15px;
+      height: 15px;
+      flex-shrink: 0;
     }
 
     .code-block-container pre {
@@ -2475,6 +2538,10 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                   <span class="web-search-pill-label" id="webSearchLabel">Web search</span>
                 </button>
+                <button class="code-mode-pill" id="codeModeBtn" type="button" title="Code mode: strict production code" aria-label="Toggle code mode">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                  <span class="web-search-pill-label" id="codeModeLabel">Code mode</span>
+                </button>
                 <div class="model-picker-wrap" id="modelPickerWrap">
                   <button class="model-picker-trigger" id="modelPickerTrigger" type="button" title="Quick model switch" aria-label="Switch model">
                     <span class="model-picker-trigger-label" id="modelPickerLabel">Model</span>
@@ -2632,6 +2699,23 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="resetSettingsBtn">Reset</button>
         <button class="btn btn-primary" id="saveSettingsBtn">Done</button>
+      </div>
+    </div>
+  <div class="modal-overlay" id="codePreviewModal" role="dialog" aria-modal="true">
+    <div class="modal code-preview-modal">
+      <div class="modal-header">
+        <h2 class="modal-title" id="codePreviewTitle">Live Code Preview</h2>
+        <div style="display:flex;gap:6px;">
+          <button class="icon-btn" id="codePreviewNewTab" title="Open preview in new tab" aria-label="Open in new tab">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          </button>
+          <button class="icon-btn" id="closeCodePreviewBtn" aria-label="Close preview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="modal-body" style="padding:0;flex:1;display:flex;">
+        <iframe id="codePreviewIframe" sandbox="allow-scripts allow-modals" style="width:100%;height:100%;border:none;background:#ffffff;border-radius:0 0 20px 20px;"></iframe>
       </div>
     </div>
   </div>
@@ -2957,6 +3041,9 @@
         search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
         mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>',
         speaker: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>',
+        download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+        play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+        code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
       };
 
       var thinkingAnimTimer = null;
@@ -3626,10 +3713,16 @@
         var html = escapeHtml(text);
         html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
           var cleanLang = (lang || 'code').trim().toLowerCase();
+          var isPreviewable = cleanLang === 'html' || cleanLang === 'svg' || cleanLang === 'xml' || cleanLang === 'web';
+          var previewBtnHtml = isPreviewable ? '<button class="code-block-btn code-block-preview" type="button" title="Live Preview">' + ICONS.play + ' <span>Preview</span></button>' : '';
           return '<div class="code-block-container">' +
             '<div class="code-block-header">' +
               '<span class="code-block-lang">' + escapeHtml(cleanLang) + '</span>' +
-              '<button class="code-block-copy" type="button">' + ICONS.copy + ' <span>Copy code</span></button>' +
+              '<div class="code-block-actions">' +
+                previewBtnHtml +
+                '<button class="code-block-btn code-block-download" type="button" title="Download file">' + ICONS.download + ' <span>Download</span></button>' +
+                '<button class="code-block-btn code-block-copy" type="button" title="Copy code">' + ICONS.copy + ' <span>Copy</span></button>' +
+              '</div>' +
             '</div>' +
             '<pre><code class="language-' + escapeHtml(cleanLang) + '">' + code.replace(/\n$/, '') + '</code></pre>' +
           '</div>';
@@ -3834,6 +3927,7 @@
         });
         updateMetrics(chat.metrics);
         scrollToBottom();
+        triggerPrismHighlight();
       }
 
       function startThinkingAnim(labelEl, baseLabel) {
@@ -4181,6 +4275,7 @@
             }
           }
         }
+        triggerPrismHighlight();
       }
 
       function updateMetrics(m) {
@@ -4831,6 +4926,75 @@
         document.getElementById('pendingFilesList').appendChild(tag);
       }
 
+      function triggerPrismHighlight() {
+        if (window.Prism && messagesEl) {
+          try { Prism.highlightAllUnder(messagesEl); } catch (_) {}
+        }
+      }
+
+      function getFileExtension(lang) {
+        var l = (lang || '').toLowerCase().trim();
+        var map = {
+          javascript: 'js', js: 'js', jsx: 'jsx', typescript: 'ts', ts: 'ts', tsx: 'tsx',
+          python: 'py', py: 'py', html: 'html', htm: 'html', css: 'css',
+          json: 'json', rust: 'rs', rs: 'rs', cpp: 'cpp', c: 'c', cs: 'cs',
+          java: 'java', go: 'go', php: 'php', ruby: 'rb', rb: 'rb',
+          sql: 'sql', bash: 'sh', sh: 'sh', shell: 'sh', yaml: 'yml', yml: 'yml',
+          xml: 'xml', svg: 'svg', markdown: 'md', md: 'md'
+        };
+        return map[l] || 'txt';
+      }
+
+      function downloadCodeFile(code, lang) {
+        var ext = getFileExtension(lang);
+        var filename = 'code.' + ext;
+        var blob = new Blob([code], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 100);
+        showToast('Downloaded ' + filename, 'info');
+      }
+
+      var currentPreviewCode = '';
+
+      function openCodePreview(code, lang) {
+        currentPreviewCode = code || '';
+        var modal = $('codePreviewModal');
+        var iframe = $('codePreviewIframe');
+        if (!modal || !iframe) return;
+        iframe.srcdoc = currentPreviewCode;
+        modal.classList.add('open');
+      }
+
+      function closeCodePreview() {
+        var modal = $('codePreviewModal');
+        var iframe = $('codePreviewIframe');
+        if (modal) modal.classList.remove('open');
+        if (iframe) iframe.srcdoc = '';
+        currentPreviewCode = '';
+      }
+
+      function openCodePreviewNewTab() {
+        if (!currentPreviewCode) return;
+        var blob = new Blob([currentPreviewCode], { type: 'text/html;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+      }
+
+      var codeMode = false;
+
+      function toggleCodeMode() {
+        codeMode = !codeMode;
+        var btn = $('codeModeBtn');
+        if (btn) btn.classList.toggle('active-code', codeMode);
+        showToast(codeMode ? 'Code mode: on (strict production code)' : 'Code mode: off', 'info');
+      }
+
       messagesEl.addEventListener('click', function(e) {
         var copyBtn = e.target.closest('.code-block-copy');
         if (copyBtn) {
@@ -4838,13 +5002,37 @@
           var codeEl = container ? container.querySelector('code') : null;
           var codeText = codeEl ? codeEl.textContent : '';
           navigator.clipboard.writeText(codeText).then(function() {
+            var label = copyBtn.querySelector('span');
             copyBtn.innerHTML = ICONS.check + ' <span>Copied!</span>';
             copyBtn.classList.add('copied');
             setTimeout(function() {
-              copyBtn.innerHTML = ICONS.copy + ' <span>Copy code</span>';
+              copyBtn.innerHTML = ICONS.copy + ' <span>Copy</span>';
               copyBtn.classList.remove('copied');
             }, 1600);
           }).catch(function() { showToast('Couldn\u2019t copy code'); });
+          return;
+        }
+
+        var downloadBtn = e.target.closest('.code-block-download');
+        if (downloadBtn) {
+          var container = downloadBtn.closest('.code-block-container');
+          var codeEl = container ? container.querySelector('code') : null;
+          var langEl = container ? container.querySelector('.code-block-lang') : null;
+          var codeText = codeEl ? codeEl.textContent : '';
+          var lang = langEl ? langEl.textContent : '';
+          downloadCodeFile(codeText, lang);
+          return;
+        }
+
+        var previewBtn = e.target.closest('.code-block-preview');
+        if (previewBtn) {
+          var container = previewBtn.closest('.code-block-container');
+          var codeEl = container ? container.querySelector('code') : null;
+          var langEl = container ? container.querySelector('.code-block-lang') : null;
+          var codeText = codeEl ? codeEl.textContent : '';
+          var lang = langEl ? langEl.textContent : '';
+          openCodePreview(codeText, lang);
+          return;
         }
       });
 
@@ -5135,11 +5323,19 @@
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });
 
+      $('codeModeBtn').addEventListener('click', toggleCodeMode);
+      $('closeCodePreviewBtn').addEventListener('click', closeCodePreview);
+      $('codePreviewNewTab').addEventListener('click', openCodePreviewNewTab);
+      $('codePreviewModal').addEventListener('click', function(e) {
+        if (e.target === $('codePreviewModal')) closeCodePreview();
+      });
+
       $('toastClose').addEventListener('click', dismissToast);
       toast.addEventListener('click', function(e) { if (e.target === toast) dismissToast(); });
 
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
+          if ($('codePreviewModal').classList.contains('open')) { closeCodePreview(); return; }
           if (toastShowing) { dismissToast(); return; }
           if (settingsModal.classList.contains('open')) { closeSettings(); return; }
         }

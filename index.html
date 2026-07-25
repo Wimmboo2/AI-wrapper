@@ -2520,28 +2520,12 @@
             <div id="pendingFilesList" class="pending-files-list"></div>
             <div class="composer-footer">
               <div class="composer-left">
-                <button class="composer-icon-btn" type="button" title="Voice dictation" aria-label="Voice dictation" id="micBtn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" y1="19" x2="12" y2="23"/>
-                    <line x1="8" y1="23" x2="16" y2="23"/>
-                  </svg>
-                </button>
                 <button class="composer-icon-btn" type="button" title="Attach file" aria-label="Attach file" id="attachBtn">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 5v14M5 12h14"/>
                   </svg>
                 </button>
                 <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
-                <button class="web-search-pill" id="webSearchBtn" type="button" title="Web search" aria-label="Toggle web search">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                  <span class="web-search-pill-label" id="webSearchLabel">Web search</span>
-                </button>
-                <button class="code-mode-pill" id="codeModeBtn" type="button" title="Code mode: strict production code" aria-label="Toggle code mode">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                  <span class="web-search-pill-label" id="codeModeLabel">Code mode</span>
-                </button>
                 <div class="model-picker-wrap" id="modelPickerWrap">
                   <button class="model-picker-trigger" id="modelPickerTrigger" type="button" title="Quick model switch" aria-label="Switch model">
                     <span class="model-picker-trigger-label" id="modelPickerLabel">Model</span>
@@ -2554,8 +2538,16 @@
                   </div>
                 </div>
               </div>
-              <div class="composer-right">
-<button class="send-btn" id="sendBtn" disabled title="Send" aria-label="Send message">
+              <div class="composer-right" style="display:flex;align-items:center;gap:6px;">
+                <button class="composer-icon-btn" type="button" title="Voice dictation" aria-label="Voice dictation" id="micBtn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" y1="19" x2="12" y2="23"/>
+                    <line x1="8" y1="23" x2="16" y2="23"/>
+                  </svg>
+                </button>
+                <button class="send-btn" id="sendBtn" disabled title="Send" aria-label="Send message">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 19V5M5 12l7-7 7 7"/>
                   </svg>
@@ -2990,10 +2982,11 @@
       };
 
       var DEFAULT_TEMPLATES = [
-        { key: 'code', label: 'Code Assistant', prompt: 'Write clean, well-structured, efficient code for ' },
+        { key: 'code', label: 'Code Mode Assistant', prompt: 'Write clean, well-structured, production-ready code for ', enableCodeMode: true },
+        { key: 'web', label: 'Web Search', prompt: 'Search the web and provide up-to-date information on ', enableWebSearch: true },
         { key: 'explain', label: 'Simple Explainer', prompt: 'Explain this topic simply and clearly, step by step: ' },
         { key: 'summarize', label: 'Summarize Text', prompt: 'Summarize the key takeaways and main points of the following text: ' },
-        { key: 'refactor', label: 'Code Refactor', prompt: 'Refactor and optimize the following code for better readability and performance: ' },
+        { key: 'refactor', label: 'Code Refactor', prompt: 'Refactor and optimize the following code for better readability and performance: ', enableCodeMode: true },
         { key: 'translate', label: 'Language Translation', prompt: 'Translate the following text into natural English: ' },
       ];
 
@@ -5187,6 +5180,14 @@
 
       function applySlashTemplate(item) {
         composerInput.value = item.prompt;
+        if (item.enableCodeMode) {
+          codeMode = true;
+          showToast('Code mode activated (production code instructions)', 'info');
+        }
+        if (item.enableWebSearch) {
+          webSearch = true;
+          showToast('Web search activated', 'info');
+        }
         var menu = $('slashMenu');
         if (menu) menu.classList.remove('visible');
         autoResize();
@@ -5197,7 +5198,6 @@
 
       $('micBtn').addEventListener('click', toggleSpeechRecognition);
       $('attachBtn').addEventListener('click', function() { $('fileInput').click(); });
-      $('webSearchBtn').addEventListener('click', toggleWebSearch);
       $('fileInput').addEventListener('change', function(e) {
         var files = e.target.files;
         if (!files || !files.length) return;
@@ -5323,7 +5323,6 @@
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });
 
-      $('codeModeBtn').addEventListener('click', toggleCodeMode);
       $('closeCodePreviewBtn').addEventListener('click', closeCodePreview);
       $('codePreviewNewTab').addEventListener('click', openCodePreviewNewTab);
       $('codePreviewModal').addEventListener('click', function(e) {

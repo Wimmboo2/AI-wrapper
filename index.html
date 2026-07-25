@@ -1135,6 +1135,24 @@
       border: 1px solid rgba(59, 130, 246, 0.35);
     }
 
+    .active-mode-badge.amber-mode {
+      background: rgba(245, 158, 11, 0.18);
+      color: #fcd34d;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+
+    .active-mode-badge.emerald-mode {
+      background: rgba(16, 185, 129, 0.18);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+
+    .active-mode-badge.pink-mode {
+      background: rgba(244, 114, 182, 0.18);
+      color: #f472b6;
+      border: 1px solid rgba(244, 114, 182, 0.35);
+    }
+
     .active-mode-badge svg {
       width: 13px;
       height: 13px;
@@ -3040,12 +3058,12 @@
       };
 
       var DEFAULT_TEMPLATES = [
-        { key: 'code', label: 'Code mode', prompt: '', enableCodeMode: true },
-        { key: 'web', label: 'Web search', prompt: '', enableWebSearch: true },
-        { key: 'explain', label: 'Simple Explainer', prompt: 'Explain this topic simply and clearly, step by step: ' },
-        { key: 'summarize', label: 'Summarize Text', prompt: 'Summarize the key takeaways and main points of the following text: ' },
-        { key: 'refactor', label: 'Code Refactor', prompt: '', enableCodeMode: true },
-        { key: 'translate', label: 'Language Translation', prompt: 'Translate the following text into natural English: ' },
+        { key: 'code', label: 'Code mode', color: 'purple', prompt: '', enableCodeMode: true },
+        { key: 'web', label: 'Web search', color: 'blue', prompt: '', enableWebSearch: true },
+        { key: 'explain', label: 'Simple Explainer', color: 'amber', prompt: '', prefix: 'Explain this topic simply and clearly, step by step: ' },
+        { key: 'summarize', label: 'Summarize Text', color: 'emerald', prompt: '', prefix: 'Summarize the key takeaways and main points of the following text: ' },
+        { key: 'refactor', label: 'Code Refactor', color: 'purple', prompt: '', prefix: 'Refactor and optimize the following code: ', enableCodeMode: true },
+        { key: 'translate', label: 'Language Translation', color: 'pink', prompt: '', prefix: 'Translate the following text into natural English: ' },
       ];
 
       var DEFAULT_SETTINGS = {
@@ -4543,9 +4561,13 @@
 
         var userContent = text;
         var displayContent = text;
+        if (activeTemplate && activeTemplate.prefix) {
+          userContent = activeTemplate.prefix + text;
+        }
+
         if (pendingFiles.length) {
           var parts = [];
-          if (text) parts.push({ type: 'text', text: text });
+          if (userContent) parts.push({ type: 'text', text: typeof userContent === 'string' ? userContent : text });
           var fileNames = [];
           for (var fi = 0; fi < pendingFiles.length; fi++) {
             var f = pendingFiles[fi];
@@ -4570,6 +4592,7 @@
         var currentCodeMode = codeMode;
         webSearch = false;
         codeMode = false;
+        activeTemplate = null;
         renderComposerActiveTags();
 
         var initialLabel = 'Thinking.';
@@ -5248,6 +5271,8 @@
         }
       }
 
+      var activeTemplate = null;
+
       function renderComposerActiveTags() {
         var container = $('composerActiveTags');
         if (!container) return;
@@ -5276,6 +5301,19 @@
           });
           container.appendChild(tag);
         }
+        if (activeTemplate && !activeTemplate.enableCodeMode && !activeTemplate.enableWebSearch) {
+          var colorClass = (activeTemplate.color || 'amber') + '-mode';
+          var tag = document.createElement('div');
+          tag.className = 'active-mode-badge ' + colorClass;
+          tag.innerHTML = ICONS.spark + ' <span>' + escapeHtml(activeTemplate.label) + '</span> <span class="active-mode-remove" title="Remove template">\u00d7</span>';
+          tag.querySelector('.active-mode-remove').addEventListener('click', function(e) {
+            e.stopPropagation();
+            activeTemplate = null;
+            renderComposerActiveTags();
+            showToast('Template disabled', 'info');
+          });
+          container.appendChild(tag);
+        }
       }
 
       function applySlashTemplate(item) {
@@ -5288,6 +5326,7 @@
           webSearch = true;
           showToast('Web search activated', 'info');
         }
+        activeTemplate = item;
         renderComposerActiveTags();
         var menu = $('slashMenu');
         if (menu) menu.classList.remove('visible');

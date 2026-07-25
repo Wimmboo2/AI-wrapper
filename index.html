@@ -702,10 +702,77 @@
       border-top-left-radius: 6px;
       display: inline-block;
       max-width: 100%;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
     .message-content p { margin-bottom: 0.8em; }
     .message-content p:last-child { margin-bottom: 0; }
+
+    /* Code block container & header */
+    .code-block-container {
+      margin: 12px 0;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.32);
+      overflow: hidden;
+    }
+
+    .code-block-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      font-family: var(--mono);
+      color: var(--text-muted);
+    }
+
+    .code-block-lang {
+      font-weight: 500;
+      text-transform: lowercase;
+      color: var(--accent);
+      opacity: 0.9;
+    }
+
+    .code-block-copy {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-faint);
+      font-size: 11px;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+
+    .code-block-copy:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-secondary);
+    }
+
+    .code-block-copy.copied {
+      color: var(--success, #7aad8a);
+    }
+
+    .code-block-copy svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .code-block-container pre {
+      margin: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      padding: 12px 14px;
+    }
 
     .message-content pre {
       background: rgba(0,0,0,0.28);
@@ -965,12 +1032,100 @@
     }
 
     .composer {
+      position: relative;
       background: var(--bg-composer);
       border: 1px solid transparent;
       border-radius: 22px;
       padding: 14px 16px 12px;
       transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.12);
+    }
+
+    /* Slash Menu Popup */
+    .slash-menu {
+      display: none;
+      position: absolute;
+      bottom: 100%;
+      left: 12px;
+      right: 12px;
+      margin-bottom: 8px;
+      max-height: 240px;
+      overflow-y: auto;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
+      z-index: 80;
+      padding: 4px;
+    }
+
+    .slash-menu.visible {
+      display: block;
+    }
+
+    .slash-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .slash-item:hover, .slash-item.selected {
+      background: var(--bg-hover);
+    }
+
+    .slash-item-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .slash-item-key {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 2px 7px;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+
+    .slash-item-label {
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .slash-item-prompt {
+      font-size: 11.5px;
+      color: var(--text-faint);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 180px;
+    }
+
+    .composer-icon-btn.recording {
+      color: var(--danger);
+      background: rgba(212, 120, 120, 0.15);
+      animation: micPulse 1.2s infinite;
+    }
+
+    @keyframes micPulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.1); opacity: 0.7; }
+    }
+
+    .msg-action.speaking {
+      color: var(--accent);
+      background: var(--accent-soft);
     }
 
     .composer:focus-within {
@@ -2291,16 +2446,25 @@
 
         <div class="composer-shell" id="composerShell">
           <div class="composer" id="composer">
+            <div class="slash-menu" id="slashMenu"></div>
             <textarea
               class="composer-input"
               id="composerInput"
               rows="1"
-              placeholder="How can I help you today?"
+              placeholder="How can I help you today? (Type / for commands)"
               autocomplete="off"
             ></textarea>
             <div id="pendingFilesList" class="pending-files-list"></div>
             <div class="composer-footer">
               <div class="composer-left">
+                <button class="composer-icon-btn" type="button" title="Voice dictation" aria-label="Voice dictation" id="micBtn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" y1="19" x2="12" y2="23"/>
+                    <line x1="8" y1="23" x2="16" y2="23"/>
+                  </svg>
+                </button>
                 <button class="composer-icon-btn" type="button" title="Attach file" aria-label="Attach file" id="attachBtn">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 5v14M5 12h14"/>
@@ -2741,6 +2905,14 @@
         }
       };
 
+      var DEFAULT_TEMPLATES = [
+        { key: 'code', label: 'Code Assistant', prompt: 'Write clean, well-structured, efficient code for ' },
+        { key: 'explain', label: 'Simple Explainer', prompt: 'Explain this topic simply and clearly, step by step: ' },
+        { key: 'summarize', label: 'Summarize Text', prompt: 'Summarize the key takeaways and main points of the following text: ' },
+        { key: 'refactor', label: 'Code Refactor', prompt: 'Refactor and optimize the following code for better readability and performance: ' },
+        { key: 'translate', label: 'Language Translation', prompt: 'Translate the following text into natural English: ' },
+      ];
+
       var DEFAULT_SETTINGS = {
         apiEndpoint: '',
         provider: 'openai',
@@ -2756,6 +2928,7 @@
         customModelCtx: 8192,
         systemPrompt: '',
         quickCustomModels: [],
+        promptTemplates: DEFAULT_TEMPLATES,
       };
 
       var PROMPTS = {
@@ -2782,6 +2955,8 @@
         x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
         retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
         search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+        mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>',
+        speaker: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>',
       };
 
       var thinkingAnimTimer = null;
@@ -3450,7 +3625,14 @@
         if (!text) return '';
         var html = escapeHtml(text);
         html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
-          return '<pre><code' + (lang ? ' class="language-' + lang + '"' : '') + '>' + code.replace(/\n$/, '') + '</code></pre>';
+          var cleanLang = (lang || 'code').trim().toLowerCase();
+          return '<div class="code-block-container">' +
+            '<div class="code-block-header">' +
+              '<span class="code-block-lang">' + escapeHtml(cleanLang) + '</span>' +
+              '<button class="code-block-copy" type="button">' + ICONS.copy + ' <span>Copy code</span></button>' +
+            '</div>' +
+            '<pre><code class="language-' + escapeHtml(cleanLang) + '">' + code.replace(/\n$/, '') + '</code></pre>' +
+          '</div>';
         });
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
         html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
@@ -3467,7 +3649,7 @@
         return html.split(/\n\n+/).map(function(block) {
           block = block.trim();
           if (!block) return '';
-          if (/^<(h[1-3]|ul|ol|pre|blockquote)/.test(block)) return block;
+          if (/^<(h[1-3]|ul|ol|pre|blockquote|div)/.test(block)) return block;
           return '<p>' + block.replace(/\n/g, '<br>') + '</p>';
         }).join('');
       }
@@ -3743,6 +3925,17 @@
             branchNav.appendChild(nextBtn);
             actions.appendChild(branchNav);
           }
+          var ttsBtn = document.createElement('button');
+          ttsBtn.type = 'button';
+          ttsBtn.className = 'msg-action tts-btn';
+          ttsBtn.title = 'Read aloud';
+          ttsBtn.setAttribute('aria-label', 'Read aloud');
+          ttsBtn.innerHTML = ICONS.speaker;
+          ttsBtn.addEventListener('click', function() {
+            toggleTextToSpeech(msg.content, ttsBtn);
+          });
+          actions.appendChild(ttsBtn);
+
           var retryBtn = document.createElement('button');
           retryBtn.type = 'button';
           retryBtn.className = 'msg-action';
@@ -4638,6 +4831,183 @@
         document.getElementById('pendingFilesList').appendChild(tag);
       }
 
+      messagesEl.addEventListener('click', function(e) {
+        var copyBtn = e.target.closest('.code-block-copy');
+        if (copyBtn) {
+          var container = copyBtn.closest('.code-block-container');
+          var codeEl = container ? container.querySelector('code') : null;
+          var codeText = codeEl ? codeEl.textContent : '';
+          navigator.clipboard.writeText(codeText).then(function() {
+            copyBtn.innerHTML = ICONS.check + ' <span>Copied!</span>';
+            copyBtn.classList.add('copied');
+            setTimeout(function() {
+              copyBtn.innerHTML = ICONS.copy + ' <span>Copy code</span>';
+              copyBtn.classList.remove('copied');
+            }, 1600);
+          }).catch(function() { showToast('Couldn\u2019t copy code'); });
+        }
+      });
+
+      // Text to speech (TTS)
+      var activeTtsBtn = null;
+
+      function toggleTextToSpeech(text, btn) {
+        if (!('speechSynthesis' in window)) {
+          showToast('Text-to-speech not supported in this browser', 'info');
+          return;
+        }
+        if (window.speechSynthesis.speaking) {
+          window.speechSynthesis.cancel();
+          if (activeTtsBtn) activeTtsBtn.classList.remove('speaking');
+          if (activeTtsBtn === btn) {
+            activeTtsBtn = null;
+            return;
+          }
+        }
+        if (!text) return;
+        var cleanText = text.replace(/```[\s\S]*?```/g, 'Code block omitted.')
+                            .replace(/`([^`]+)`/g, '$1')
+                            .replace(/[*_#~]/g, '')
+                            .trim();
+        var utter = new SpeechSynthesisUtterance(cleanText);
+        utter.rate = 1.0;
+        utter.onend = function() {
+          if (btn) btn.classList.remove('speaking');
+          activeTtsBtn = null;
+        };
+        utter.onerror = function() {
+          if (btn) btn.classList.remove('speaking');
+          activeTtsBtn = null;
+        };
+        activeTtsBtn = btn;
+        if (btn) btn.classList.add('speaking');
+        window.speechSynthesis.speak(utter);
+      }
+
+      // Voice Dictation (Speech Recognition)
+      var recognition = null;
+      var isRecognizing = false;
+
+      function toggleSpeechRecognition() {
+        var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRec) {
+          showToast('Speech recognition not supported in this browser', 'info');
+          return;
+        }
+        var btn = $('micBtn');
+        if (isRecognizing && recognition) {
+          recognition.stop();
+          return;
+        }
+        try {
+          recognition = new SpeechRec();
+          recognition.continuous = true;
+          recognition.interimResults = false;
+          recognition.lang = 'en-US';
+
+          recognition.onstart = function() {
+            isRecognizing = true;
+            if (btn) btn.classList.add('recording');
+            showToast('Listening... Speak into microphone', 'info');
+          };
+
+          recognition.onresult = function(event) {
+            var transcript = '';
+            for (var i = event.resultIndex; i < event.results.length; i++) {
+              if (event.results[i].isFinal) {
+                transcript += event.results[i][0].transcript;
+              }
+            }
+            if (transcript) {
+              var cur = composerInput.value;
+              composerInput.value = cur ? (cur.trim() + ' ' + transcript.trim()) : transcript.trim();
+              autoResize();
+              updateSendBtn();
+              updateSlashMenu();
+            }
+          };
+
+          recognition.onerror = function(err) {
+            console.error('Speech recognition error:', err);
+            stopSpeechRecognition();
+          };
+
+          recognition.onend = function() {
+            stopSpeechRecognition();
+          };
+
+          recognition.start();
+        } catch (e) {
+          console.error(e);
+          stopSpeechRecognition();
+        }
+      }
+
+      function stopSpeechRecognition() {
+        isRecognizing = false;
+        var btn = $('micBtn');
+        if (btn) btn.classList.remove('recording');
+        if (recognition) {
+          try { recognition.abort(); } catch (_) {}
+          recognition = null;
+        }
+      }
+
+      // Slash Command Popup
+      var slashSelectedIndex = 0;
+      var currentSlashMatches = [];
+
+      function getPromptTemplates() {
+        return (settings.promptTemplates && settings.promptTemplates.length) ? settings.promptTemplates : DEFAULT_TEMPLATES;
+      }
+
+      function updateSlashMenu() {
+        var val = composerInput.value;
+        var menu = $('slashMenu');
+        if (!menu) return;
+        if (val.startsWith('/')) {
+          var query = val.slice(1).toLowerCase();
+          var templates = getPromptTemplates();
+          currentSlashMatches = templates.filter(function(t) {
+            return t.key.toLowerCase().indexOf(query) !== -1 || t.label.toLowerCase().indexOf(query) !== -1;
+          });
+          if (!currentSlashMatches.length) {
+            menu.classList.remove('visible');
+            return;
+          }
+          if (slashSelectedIndex >= currentSlashMatches.length) slashSelectedIndex = 0;
+          menu.innerHTML = '';
+          currentSlashMatches.forEach(function(item, idx) {
+            var el = document.createElement('div');
+            el.className = 'slash-item' + (idx === slashSelectedIndex ? ' selected' : '');
+            el.innerHTML = '<div class="slash-item-left">' +
+              '<span class="slash-item-key">/' + escapeHtml(item.key) + '</span>' +
+              '<span class="slash-item-label">' + escapeHtml(item.label) + '</span>' +
+              '</div>' +
+              '<span class="slash-item-prompt">' + escapeHtml(item.prompt) + '</span>';
+            el.addEventListener('click', function(e) {
+              e.stopPropagation();
+              applySlashTemplate(item);
+            });
+            menu.appendChild(el);
+          });
+          menu.classList.add('visible');
+        } else {
+          menu.classList.remove('visible');
+        }
+      }
+
+      function applySlashTemplate(item) {
+        composerInput.value = item.prompt;
+        var menu = $('slashMenu');
+        if (menu) menu.classList.remove('visible');
+        autoResize();
+        updateSendBtn();
+        composerInput.focus();
+        composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
+      }
+
+      $('micBtn').addEventListener('click', toggleSpeechRecognition);
       $('attachBtn').addEventListener('click', function() { $('fileInput').click(); });
       $('webSearchBtn').addEventListener('click', toggleWebSearch);
       $('fileInput').addEventListener('change', function(e) {
@@ -4675,7 +5045,7 @@
         var pastedCount = 0;
         for (var i = 0; i < items.length; i++) {
           var item = items[i];
-          if (item.type.indexOf('image/') !== 0) continue;
+          if (item.kind !== 'file' || item.type.indexOf('image/') === -1) continue;
           e.preventDefault();
           var blob = item.getAsFile();
           if (!blob) continue;
@@ -4695,9 +5065,36 @@
 
       sendBtn.addEventListener('click', function() { if (activeChatId in streamControllers) stopGeneration(); else sendMessage(); });
 
-      composerInput.addEventListener('input', function() { autoResize(); updateSendBtn(); });
+      composerInput.addEventListener('input', function() { autoResize(); updateSendBtn(); updateSlashMenu(); });
 
       composerInput.addEventListener('keydown', function(e) {
+        var menu = $('slashMenu');
+        if (menu && menu.classList.contains('visible') && currentSlashMatches.length) {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            slashSelectedIndex = (slashSelectedIndex + 1) % currentSlashMatches.length;
+            updateSlashMenu();
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            slashSelectedIndex = (slashSelectedIndex - 1 + currentSlashMatches.length) % currentSlashMatches.length;
+            updateSlashMenu();
+            return;
+          }
+          if (e.key === 'Enter' || e.key === 'Tab') {
+            if (currentSlashMatches[slashSelectedIndex]) {
+              e.preventDefault();
+              applySlashTemplate(currentSlashMatches[slashSelectedIndex]);
+              return;
+            }
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            menu.classList.remove('visible');
+            return;
+          }
+        }
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!(activeChatId in streamControllers)) sendMessage(); }
       });
 
@@ -4728,6 +5125,10 @@
       });
       document.addEventListener('click', function(e) {
         if (!e.target.closest('.model-picker-wrap')) closeModelPicker();
+        if (!e.target.closest('#composer')) {
+          var menu = $('slashMenu');
+          if (menu) menu.classList.remove('visible');
+        }
       });
       $('modelPickerBackdrop').addEventListener('click', closeModelPicker);
       $('composerAddModelSave').addEventListener('click', saveQuickCustomModel);
@@ -4791,7 +5192,6 @@
 
       init();
     })();
-
   </script>
 </body>
 </html>

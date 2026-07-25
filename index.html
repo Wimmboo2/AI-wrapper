@@ -835,6 +835,29 @@
       border-radius: 0;
       background: transparent;
       padding: 12px 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-x: hidden;
+    }
+
+    .code-block-container pre.no-wrap {
+      white-space: pre !important;
+      word-break: normal !important;
+      overflow-x: auto !important;
+    }
+
+    .code-block-container pre code {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .code-block-container pre.no-wrap code {
+      white-space: pre !important;
+      word-break: normal !important;
+    }
+
+    .code-block-btn.active-wrap {
+      color: var(--accent);
     }
 
     .message-content pre {
@@ -842,7 +865,9 @@
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 14px 16px;
-      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-x: hidden;
       margin: 12px 0;
       font-family: var(--mono);
       font-size: 12.5px;
@@ -3113,6 +3138,7 @@
         download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
         play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
         code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+        wrap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><path d="M3 18h7"/></svg>',
       };
 
       var thinkingAnimTimer = null;
@@ -3789,6 +3815,7 @@
               '<span class="code-block-lang">' + escapeHtml(cleanLang) + '</span>' +
               '<div class="code-block-actions">' +
                 previewBtnHtml +
+                '<button class="code-block-btn code-block-wrap active-wrap" type="button" title="Toggle word wrap">' + ICONS.wrap + ' <span>Wrap</span></button>' +
                 '<button class="code-block-btn code-block-download" type="button" title="Download file">' + ICONS.download + ' <span>Download</span></button>' +
                 '<button class="code-block-btn code-block-copy" type="button" title="Copy code">' + ICONS.copy + ' <span>Copy</span></button>' +
               '</div>' +
@@ -5107,6 +5134,18 @@
           var codeText = codeEl ? codeEl.textContent : '';
           var lang = langEl ? langEl.textContent : '';
           downloadCodeFile(codeText, lang);
+          return;
+        }
+
+        var wrapBtn = e.target.closest('.code-block-wrap');
+        if (wrapBtn) {
+          var container = wrapBtn.closest('.code-block-container');
+          var preEl = container ? container.querySelector('pre') : null;
+          if (preEl) {
+            var isNoWrap = preEl.classList.toggle('no-wrap');
+            wrapBtn.classList.toggle('active-wrap', !isNoWrap);
+            showToast(!isNoWrap ? 'Word wrap enabled' : 'Word wrap disabled', 'info');
+          }
           return;
         }
 

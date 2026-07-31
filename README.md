@@ -10,8 +10,6 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 
 ![Main chat interface](screenshots/main-chat-interface.png)
 
-![Settings](screenshots/settings.png)
-
 ![Code block](screenshots/code.png)
 
 ![Code mode](screenshots/code-mode.png)

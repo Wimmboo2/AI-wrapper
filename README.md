@@ -8,17 +8,17 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 
 ## What it can do
 
-[SCREENSHOT: main chat view showing a conversation with streaming response, sidebar with chat list, and the composer with model picker open]
+![Main chat interface](screenshots/main-chat-interface.png)
 
-[SCREENSHOT: settings modal with provider picker dropdown, API key field, system prompt editor, temperature/max-tokens sliders, and thinking toggle]
+![Settings](screenshots/settings.png)
 
-[SCREENSHOT: code block in a message with syntax highlighting, language header, and copy/download/wrap buttons]
+![Code block](screenshots/code.png)
 
-[SCREENSHOT: slash command menu open in the composer showing available templates like /code, /explain, /summarize]
+![Code mode](screenshots/code-mode.png)
 
-[SCREENSHOT: metrics panel showing tokens per second, time to first token, context window bar, and total token counter]
+![Metrics](screenshots/metrics.png)
 
-[SCREENSHOT: mobile layout with sidebar as an overlay and model picker as a bottom sheet]
+![Mobile layout](screenshots/phone-interface.png)
 
 ### Chat
 

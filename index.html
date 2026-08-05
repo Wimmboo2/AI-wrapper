@@ -1062,22 +1062,125 @@
       user-select: none;
     }
 
-    /* Web search sources */
-    .search-sources {
+    /* Inline citation chips */
+    .citation-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      vertical-align: baseline;
+      margin: 0 2px;
+      padding: 1px 7px 1px 5px;
+      border: none;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.5;
+      cursor: pointer;
+      max-width: 180px;
+      transition: background 0.12s, color 0.12s;
+    }
+    .citation-chip:hover {
+      background: rgba(212, 162, 127, 0.28);
+      color: var(--text);
+    }
+    .citation-chip-num {
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+    .citation-chip-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: inherit;
+      opacity: 0.92;
+    }
+    .citation-chip-icon {
+      width: 10px;
+      height: 10px;
+      flex-shrink: 0;
+      opacity: 0.75;
+    }
+
+    /* Expandable sources footer */
+    .sources-footer {
       margin-top: 12px;
+      max-width: 560px;
+    }
+    .sources-trigger-row {
       border-top: 1px solid var(--border-soft);
       padding-top: 8px;
+    }
+    .sources-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 10.5px;
+      font-weight: 550;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      cursor: pointer;
+      padding: 4px 2px;
+      border-radius: 6px;
+      transition: color 0.12s, background 0.12s;
+    }
+    .sources-trigger:hover {
+      color: var(--text-secondary);
+      background: rgba(255,255,255,0.04);
+    }
+    .sources-trigger-icon {
+      width: 13px;
+      height: 13px;
+      opacity: 0.8;
+    }
+    .sources-trigger-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 16px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.07);
+      color: var(--text-secondary);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .sources-trigger-chevron {
+      width: 12px;
+      height: 12px;
+      transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      opacity: 0.75;
+    }
+    .sources-trigger[aria-expanded="true"] .sources-trigger-chevron {
+      transform: rotate(180deg);
+    }
+    .sources-collapse {
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .sources-collapse.open {
+      grid-template-rows: 1fr;
+    }
+    .sources-collapse-inner {
+      overflow: hidden;
+      min-height: 0;
+    }
+    .search-sources {
       display: flex;
       flex-direction: column;
       gap: 3px;
-      max-width: 560px;
-    }
-    .search-sources-head {
-      font-size: 10.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--text-faint);
-      margin-bottom: 2px;
+      padding-top: 10px;
     }
     .search-source {
       display: flex;
@@ -1086,7 +1189,7 @@
       color: var(--text-secondary);
       text-decoration: none;
       font-size: 13px;
-      padding: 3px 6px;
+      padding: 5px 6px;
       border-radius: 6px;
     }
     .search-source:hover {
@@ -1110,6 +1213,7 @@
       font-size: 11px;
       color: var(--text-faint);
       flex-shrink: 0;
+      margin-left: auto;
     }
     .search-error-note {
       margin-top: 8px;
@@ -3205,6 +3309,9 @@
         play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
         code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
         wrap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><path d="M3 18h7"/></svg>',
+        externalLink: '<svg class="citation-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
+        chevronDown: '<svg class="sources-trigger-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
+        link: '<svg class="sources-trigger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
       };
 
       var thinkingAnimTimer = null;
@@ -4389,7 +4496,8 @@
         body.appendChild(content);
         if (msg.role === 'assistant') {
           if (msg._search && msg._search.sources && msg._search.sources.length) {
-            body.appendChild(buildSearchSources(msg._search.sources));
+            if (!streaming) enrichCitations(content, msg._search.sources, msgIndex);
+            body.appendChild(buildSearchSources(msg._search.sources, msg, msgIndex));
           } else if (msg._search && msg._search.error && msg.content) {
             var searchNote = document.createElement('div');
             searchNote.className = 'search-error-note';
@@ -4403,13 +4511,158 @@
         return el;
       }
 
-      function buildSearchSources(sources) {
+      function truncateSourceTitle(title, maxLen) {
+        var t = String(title || '').trim();
+        if (!t) return 'Source';
+        if (t.length <= maxLen) return t;
+        return t.slice(0, maxLen - 1) + '\u2026';
+      }
+
+      function makeCitationChip(index, sources, msgIndex) {
+        var src = sources[index - 1] || {};
+        var title = src.title || src.url || 'Source';
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'citation-chip';
+        chip.setAttribute('aria-label', 'Source ' + index + ': ' + title);
+        chip.setAttribute('data-src', String(index));
+        var num = document.createElement('span');
+        num.className = 'citation-chip-num';
+        num.textContent = String(index);
+        chip.appendChild(num);
+        var name = document.createElement('span');
+        name.className = 'citation-chip-name';
+        name.textContent = truncateSourceTitle(title, 26);
+        chip.appendChild(name);
+        chip.insertAdjacentHTML('beforeend', ICONS.externalLink);
+        chip.addEventListener('click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          scrollToSources(msgIndex);
+        });
+        return chip;
+      }
+
+      function enrichCitations(contentEl, sources, msgIndex) {
+        if (!contentEl || !sources || !sources.length) return;
+        var skipTags = { PRE: 1, CODE: 1, A: 1, BUTTON: 1, SCRIPT: 1, STYLE: 1 };
+        var walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, {
+          acceptNode: function(node) {
+            var p = node.parentElement;
+            while (p && p !== contentEl) {
+              if (skipTags[p.tagName]) return NodeFilter.FILTER_REJECT;
+              p = p.parentElement;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        });
+        var textNodes = [];
+        while (walker.nextNode()) textNodes.push(walker.currentNode);
+        var citeRe = /\[(\d+)\]/g;
+        for (var ti = 0; ti < textNodes.length; ti++) {
+          var node = textNodes[ti];
+          var text = node.nodeValue;
+          if (!text || text.indexOf('[') === -1) continue;
+          citeRe.lastIndex = 0;
+          var match;
+          var last = 0;
+          var frag = document.createDocumentFragment();
+          var changed = false;
+          while ((match = citeRe.exec(text)) !== null) {
+            var n = parseInt(match[1], 10);
+            if (!(n >= 1 && n <= sources.length)) continue;
+            if (match.index > last) frag.appendChild(document.createTextNode(text.slice(last, match.index)));
+            frag.appendChild(makeCitationChip(n, sources, msgIndex));
+            last = match.index + match[0].length;
+            changed = true;
+          }
+          if (!changed) continue;
+          if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+          node.parentNode.replaceChild(frag, node);
+        }
+        var anchors = contentEl.querySelectorAll('a[href]');
+        for (var ai = 0; ai < anchors.length; ai++) {
+          var a = anchors[ai];
+          var m = String(a.textContent || '').trim().match(/^(\d+)$/);
+          if (!m) continue;
+          var idx = parseInt(m[1], 10);
+          if (!(idx >= 1 && idx <= sources.length)) continue;
+          a.replaceWith(makeCitationChip(idx, sources, msgIndex));
+        }
+      }
+
+      function applySourcesOpenState(footer, open) {
+        if (!footer) return;
+        var trigger = footer.querySelector('.sources-trigger');
+        var collapse = footer.querySelector('.sources-collapse');
+        if (trigger) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (collapse) collapse.classList.toggle('open', !!open);
+      }
+
+      function toggleSources(msgIndex) {
+        var chat = getActiveChat();
+        if (!chat || !chat.messages[msgIndex]) return;
+        var msg = chat.messages[msgIndex];
+        msg._sourcesOpen = !msg._sourcesOpen;
+        var el = messagesEl.querySelector('.message[data-index="' + msgIndex + '"]');
+        if (el) applySourcesOpenState(el.querySelector('.sources-footer'), msg._sourcesOpen);
+        if (!chat.incognito) persistChats(chat);
+      }
+
+      function scrollToSources(msgIndex) {
+        var chat = getActiveChat();
+        if (!chat || !chat.messages[msgIndex]) return;
+        var msg = chat.messages[msgIndex];
+        if (!msg._search || !msg._search.sources || !msg._search.sources.length) return;
+        if (!msg._sourcesOpen) {
+          msg._sourcesOpen = true;
+          if (!chat.incognito) persistChats(chat);
+        }
+        var el = messagesEl.querySelector('.message[data-index="' + msgIndex + '"]');
+        if (!el) return;
+        var footer = el.querySelector('.sources-footer');
+        applySourcesOpenState(footer, true);
+        var panel = el.querySelector('.sources-collapse');
+        if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      function buildSearchSources(sources, msg, msgIndex) {
+        var footer = document.createElement('div');
+        footer.className = 'sources-footer';
+        var open = !!(msg && msg._sourcesOpen);
+        var panelId = 'sources-panel-' + msgIndex;
+
+        var triggerRow = document.createElement('div');
+        triggerRow.className = 'sources-trigger-row';
+        var trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'sources-trigger';
+        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+        trigger.setAttribute('aria-controls', panelId);
+        trigger.insertAdjacentHTML('beforeend', ICONS.link);
+        var label = document.createElement('span');
+        label.textContent = 'Sources';
+        trigger.appendChild(label);
+        var count = document.createElement('span');
+        count.className = 'sources-trigger-count';
+        count.textContent = String(sources.length);
+        trigger.appendChild(count);
+        trigger.insertAdjacentHTML('beforeend', ICONS.chevronDown);
+        trigger.addEventListener('click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSources(msgIndex);
+        });
+        triggerRow.appendChild(trigger);
+        footer.appendChild(triggerRow);
+
+        var collapse = document.createElement('div');
+        collapse.className = 'sources-collapse' + (open ? ' open' : '');
+        collapse.id = panelId;
+        var inner = document.createElement('div');
+        inner.className = 'sources-collapse-inner';
         var wrap = document.createElement('div');
         wrap.className = 'search-sources';
-        var head = document.createElement('div');
-        head.className = 'search-sources-head';
-        head.textContent = 'Sources';
-        wrap.appendChild(head);
         for (var i = 0; i < sources.length; i++) {
           var s = sources[i] || {};
           var row = document.createElement('a');
@@ -4433,7 +4686,10 @@
           }
           wrap.appendChild(row);
         }
-        return wrap;
+        inner.appendChild(wrap);
+        collapse.appendChild(inner);
+        footer.appendChild(collapse);
+        return footer;
       }
 
       function updateLastAssistantMessage(msg) {
@@ -4476,11 +4732,15 @@
           content.classList.add('streaming-cursor');
           if (live) { stopThinkingAnim(); live.remove(); }
         }
-        var sourcesEl = body.querySelector('.search-sources');
+        var sourcesEl = body.querySelector('.sources-footer');
         if (msg._search && msg._search.sources && msg._search.sources.length) {
           if (!sourcesEl) {
-            if (content && content.nextSibling) { body.insertBefore(buildSearchSources(msg._search.sources), content.nextSibling); }
-            else { body.appendChild(buildSearchSources(msg._search.sources)); }
+            var streamIdx = last.dataset && last.dataset.index != null ? Number(last.dataset.index) : (getActiveChat() ? getActiveChat().messages.length - 1 : 0);
+            var panel = buildSearchSources(msg._search.sources, msg, streamIdx);
+            if (content && content.nextSibling) body.insertBefore(panel, content.nextSibling);
+            else body.appendChild(panel);
+          } else {
+            applySourcesOpenState(sourcesEl, !!msg._sourcesOpen);
           }
         } else if (sourcesEl) {
           sourcesEl.remove();

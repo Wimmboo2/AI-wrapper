@@ -14,6 +14,8 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 
 ![Code mode](screenshots/code-mode.png)
 
+![Web Search](screenshots/web_search.png)
+
 ![Metrics](screenshots/metrics.png)
 
 ![Mobile layout](screenshots/phone-interface.png)

@@ -393,6 +393,7 @@ export default {
     if (!messages || !messages.length) return jsonResponse({ error: { message: 'Missing messages' } }, 400);
 
     var searchResults = '';
+    var searchEvent = null;
     if (web_search && !(provider === 'groq' && model && model.indexOf('groq/') === 0)) {
       const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
       const originAllowed = !reqOrigin || ALLOWED_ORIGINS.some(function(o) { return reqOrigin.indexOf(o) === 0; });
@@ -405,51 +406,114 @@ export default {
         } catch (e) { console.error('KV READ FAILED:', e.message); }
         if (counter >= MONTHLY_CAP) {
           console.error('TAVILY CAP HIT:', monthKey, counter);
+          searchEvent = { search: { error: 'Monthly search cap reached (' + MONTHLY_CAP + ').' } };
         } else {
           const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-          const query = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
-          if (query) {
-            try {
-              const tavilyRes = await fetch('https://api.tavily.com/search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  api_key: env.TAVILY_API_KEY,
-                  query: query,
-                  search_depth: 'advanced',
-                  max_results: 8,
-                  include_answer: false,
-                }),
+          const rawQuery = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
+          const queries = buildSearchQueries(rawQuery);
+          if (queries.length) {
+            const outcomes = await Promise.all(queries.map(function(q) {
+              return runTavilySearch(q, env.TAVILY_API_KEY).then(function(data) {
+                return data ? { data: data } : { error: 'Search provider error (check TAVILY_API_KEY).' };
+              }).catch(function(e) {
+                console.error('TAVILY THREW:', e.message);
+                return { error: 'Search failed: ' + (e.message || 'unknown error') };
               });
-              if (tavilyRes.ok) {
-                const data = await tavilyRes.json();
-                const results = data.results || [];
-                if (results.length) {
-                  searchResults = 'Current web search results:\n\n' +
-                    results.map(function(r, i) {
-                      var entry = (i + 1) + '. ' + (r.title || '');
-                      if (r.url) entry += '\n   Source: ' + r.url;
-                      if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
-                      entry += '\n   ' + (r.content || '');
-                      return entry;
-                    }).join('\n\n') +
-                    '\n\nAnswer the question above using these search results. Do not mention the search.';
-                }
-                ctx.waitUntil(
-                  (async function() {
-                    try { await env.SEARCH_COUNTER.put(monthKey, String(counter + 1), { expirationTtl: 3456000 }); }
-                    catch (e) { console.error('KV WRITE FAILED:', e.message); }
-                  })()
-                );
-              } else {
-                console.error('TAVILY FAILED:', tavilyRes.status, await tavilyRes.text());
+            }));
+            const merged = [];
+            const seenUrls = new Set();
+            let searchSummary = '';
+            for (var oi = 0; oi < outcomes.length; oi++) {
+              if (!outcomes[oi].data) continue;
+              if (outcomes[oi].data.answer && !searchSummary) {
+                searchSummary = String(outcomes[oi].data.answer).slice(0, 1400);
               }
-            } catch (e) { console.error('TAVILY THREW:', e.message); }
+              var dataResults = outcomes[oi].data.results || [];
+              for (var ri = 0; ri < dataResults.length; ri++) {
+                var r = dataResults[ri];
+                if (!r || !r.url || seenUrls.has(r.url)) continue;
+                seenUrls.add(r.url);
+                merged.push(r);
+                if (merged.length >= 10) break;
+              }
+            }
+            ctx.waitUntil(
+              (async function() {
+                try { await env.SEARCH_COUNTER.put(monthKey, String(counter + queries.length), { expirationTtl: 3456000 }); }
+                catch (e) { console.error('KV WRITE FAILED:', e.message); }
+              })()
+            );
+            if (merged.length) {
+              const sources = merged.map(function(r) {
+                return {
+                  title: (r.title || 'Untitled').slice(0, 160),
+                  url: r.url || '',
+                  date: (r.published_date || '').slice(0, 10),
+                  snippet: (r.content || '').slice(0, 240),
+                };
+              });
+              searchEvent = { search: { query: queries[0], sources: sources } };
+              searchResults = 'Web search results (current, sourced):\n\n' +
+                (searchSummary ? 'Search summary:\n' + searchSummary + '\n\n' : '') +
+                merged.map(function(r, i) {
+                  var entry = '[' + (i + 1) + '] ' + (r.title || 'Untitled');
+                  if (r.url) entry += '\n   Source: ' + r.url;
+                  if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
+                  entry += '\n   ' + (r.content || '');
+                  return entry;
+                }).join('\n\n') +
+                '\n\nAnswer the user query using these results. Cite sources inline as [1], [2], etc. Prefer recent results for time-sensitive questions. If the results do not cover the question, say so clearly instead of guessing.';
+            } else {
+              var failedOutcome = null;
+              for (var ei = 0; ei < outcomes.length; ei++) { if (outcomes[ei].error) { failedOutcome = outcomes[ei].error; break; } }
+              searchEvent = { search: { error: failedOutcome || 'No web results found.' } };
+            }
+          } else {
+            searchEvent = { search: { error: 'No query provided for search.' } };
           }
         }
       } else {
         console.error('SEARCH ORIGIN BLOCKED:', reqOrigin);
+        searchEvent = { search: { error: 'Search blocked for this origin.' } };
       }
+    }
+
+    async function runTavilySearch(query, apiKey) {
+      const body = {
+        api_key: apiKey,
+        query: query,
+        search_depth: 'advanced',
+        max_results: 8,
+        include_answer: true,
+        include_raw_content: false,
+      };
+      if (/(news|latest|today|tonight|breaking|released|launched|announced|update|updated|this week|this month|recap|roundup|score|price|stock|election|weather)/i.test(query)) {
+        body.topic = 'news';
+        body.days = 7;
+      }
+      const res = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const errBody = (await res.text()).slice(0, 300);
+        console.error('TAVILY FAILED:', res.status, errBody);
+        return null;
+      }
+      return res.json();
+    }
+
+    function buildSearchQueries(raw) {
+      const cleaned = String(raw || '').replace(/\[Attached:[^\]]*\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (!cleaned) return [];
+      const compact = cleaned
+        .replace(/\b(what|whats|what's|whatre|what're|who|whos|who's|wheres|where|when|why|how|is|are|was|were|do|does|did|can|could|would|should|shall|will|tell me|explain|describe|about|please|the|a|an|and|or|of|to|for|with|on|in|at|by|me|my|i want|i need|know|think|dont|don't|doesnt|doesn't)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      if (cleaned.length > 20 && compact && compact.length >= 6 && compact !== cleaned) return [cleaned, compact];
+      return [cleaned];
     }
 
     const temp = typeof temperature === 'number' ? temperature : 0.7;
@@ -477,6 +541,9 @@ export default {
 
     const streamPromise = (async () => {
       try {
+        if (searchEvent) {
+          await writer.write(encoder.encode(JSON.stringify(searchEvent) + '\n'));
+        }
         switch (provider) {
           case 'openai': {
             const url = PROVIDER_URLS.openai;

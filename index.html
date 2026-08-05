@@ -1062,6 +1062,61 @@
       user-select: none;
     }
 
+    /* Web search sources */
+    .search-sources {
+      margin-top: 12px;
+      border-top: 1px solid var(--border-soft);
+      padding-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-width: 560px;
+    }
+    .search-sources-head {
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-faint);
+      margin-bottom: 2px;
+    }
+    .search-source {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 3px 6px;
+      border-radius: 6px;
+    }
+    .search-source:hover {
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+    }
+    .search-source-num {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      min-width: 14px;
+      flex-shrink: 0;
+    }
+    .search-source-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .search-source-date {
+      font-size: 11px;
+      color: var(--text-faint);
+      flex-shrink: 0;
+    }
+    .search-error-note {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-faint);
+    }
+
     .message-edit {
       width: 100%;
       border: 1px solid var(--border-soft);
@@ -4332,10 +4387,53 @@
         } else content.innerHTML = renderMarkdown(msg.content || '');
         if (!msg.content && msg.role === 'assistant') content.style.display = 'none';
         body.appendChild(content);
+        if (msg.role === 'assistant') {
+          if (msg._search && msg._search.sources && msg._search.sources.length) {
+            body.appendChild(buildSearchSources(msg._search.sources));
+          } else if (msg._search && msg._search.error && msg.content) {
+            var searchNote = document.createElement('div');
+            searchNote.className = 'search-error-note';
+            searchNote.textContent = 'Web search unavailable \u2014 answered from memory';
+            body.appendChild(searchNote);
+          }
+        }
         if (msg.content && !(streaming && msg.role === 'assistant')) { body.appendChild(buildMessageActions(msg, msgIndex)); }
         el.appendChild(avatar);
         el.appendChild(body);
         return el;
+      }
+
+      function buildSearchSources(sources) {
+        var wrap = document.createElement('div');
+        wrap.className = 'search-sources';
+        var head = document.createElement('div');
+        head.className = 'search-sources-head';
+        head.textContent = 'Sources';
+        wrap.appendChild(head);
+        for (var i = 0; i < sources.length; i++) {
+          var s = sources[i] || {};
+          var row = document.createElement('a');
+          row.className = 'search-source';
+          row.href = s.url || '#';
+          row.target = '_blank';
+          row.rel = 'noopener noreferrer';
+          var num = document.createElement('span');
+          num.className = 'search-source-num';
+          num.textContent = (i + 1);
+          row.appendChild(num);
+          var txt = document.createElement('span');
+          txt.className = 'search-source-title';
+          txt.textContent = s.title || s.url || 'Source';
+          row.appendChild(txt);
+          if (s.date) {
+            var d = document.createElement('span');
+            d.className = 'search-source-date';
+            d.textContent = s.date;
+            row.appendChild(d);
+          }
+          wrap.appendChild(row);
+        }
+        return wrap;
       }
 
       function updateLastAssistantMessage(msg) {
@@ -4377,6 +4475,15 @@
           content.innerHTML = renderMarkdown(msg.content);
           content.classList.add('streaming-cursor');
           if (live) { stopThinkingAnim(); live.remove(); }
+        }
+        var sourcesEl = body.querySelector('.search-sources');
+        if (msg._search && msg._search.sources && msg._search.sources.length) {
+          if (!sourcesEl) {
+            if (content && content.nextSibling) { body.insertBefore(buildSearchSources(msg._search.sources), content.nextSibling); }
+            else { body.appendChild(buildSearchSources(msg._search.sources)); }
+          }
+        } else if (sourcesEl) {
+          sourcesEl.remove();
         }
 
         if (nearBottom) {
@@ -4816,6 +4923,20 @@
                   else localMetrics[k] = event[k];
                 }
               });
+
+              if (event.search) {
+                assistantMsg._search = event.search;
+                if (isActive() && !assistantMsg.content) {
+                  var liveLabel = messagesEl.querySelector('.thinking-label');
+                  if (liveLabel) {
+                    if (event.search.sources && event.search.sources.length) {
+                      liveLabel.textContent = 'Searching web \u00b7 ' + event.search.sources.length + ' source' + (event.search.sources.length !== 1 ? 's' : '');
+                    } else if (event.search.error) {
+                      liveLabel.textContent = 'Web search unavailable';
+                    }
+                  }
+                }
+              }
 
               if (event.error) { throw new Error(event.error.message || event.error || 'Stream error'); }
             }

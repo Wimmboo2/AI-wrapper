@@ -2333,6 +2333,11 @@
 
       .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 
+      /* Message actions always visible on touch screens */
+      .message-actions {
+        opacity: 1;
+      }
+
       /* Composer mobile fixes */
       .composer-area { padding: 0 10px 10px; }
       .composer { padding: 12px 12px 10px; }
@@ -2433,6 +2438,12 @@
       .model-picker-item-actions {
         opacity: 1 !important;
         pointer-events: auto !important;
+      }
+    }
+
+    @media (hover: none) {
+      .message-actions {
+        opacity: 1;
       }
     }
 
@@ -4102,7 +4113,8 @@
             prevBtn.title = 'Previous response';
             var label = document.createElement('span');
             label.className = 'branch-label';
-            label.textContent = (chat._branchActive && chat._branchActive[parentIdx] != null ? (chat._branchActive[parentIdx] + 1) : (branchCount + 1)) + '/' + (branchCount + 1);
+            var branchActiveIdx = (chat._branchActive && chat._branchActive[parentIdx] != null) ? Math.min(Number(chat._branchActive[parentIdx]), branchCount) : branchCount;
+            label.textContent = (branchActiveIdx + 1) + '/' + (branchCount + 1);
             var nextBtn = document.createElement('button');
             nextBtn.type = 'button';
             nextBtn.className = 'msg-action branch-btn';
@@ -4148,13 +4160,21 @@
         if (!parentUser || parentUser.role !== 'user') return;
         var oldMsg = chat.messages[msgIndex];
         if (!chat._branches) chat._branches = {};
+        if (!chat._branchActive) chat._branchActive = {};
         if (!chat._branches[parentUserIdx]) chat._branches[parentUserIdx] = [];
-        chat._branches[parentUserIdx].push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete });
-        chat._branchActive = chat._branchActive || {};
+        if (chat._liveReplies && chat._liveReplies[parentUserIdx]) {
+          chat._branches[parentUserIdx].push(chat._liveReplies[parentUserIdx]);
+          delete chat._liveReplies[parentUserIdx];
+        }
+        var branchArr = chat._branches[parentUserIdx];
+        var isDup = branchArr.some(function(b) { return b.content === oldMsg.content; });
+        if (!isDup) {
+          branchArr.push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete });
+        }
         chat._branchActive[parentUserIdx] = chat._branches[parentUserIdx].length;
         chat.messages = chat.messages.slice(0, parentUserIdx);
         chat.metrics = null;
-        if (!chat.incognito) persistChats();
+        if (!chat.incognito) persistChats(chat);
         composerInput.value = parentUser.content || '';
         autoResize();
         updateSendBtn();
@@ -4172,10 +4192,16 @@
         var current = chat.messages[parentUserIdx + 1];
         if (!current || current.role !== 'assistant') return;
         chat._branchActive = chat._branchActive || {};
+        if (!chat._liveReplies) chat._liveReplies = {};
         var active = chat._branchActive[parentUserIdx] != null ? chat._branchActive[parentUserIdx] : branches.length;
+        if (typeof active !== 'number' || isNaN(active)) active = branches.length;
+        if (active < 0) active = 0;
+        if (active > branches.length) active = branches.length;
         var total = branches.length + 1;
         if (active < branches.length) {
           branches[active] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete };
+        } else {
+          chat._liveReplies[parentUserIdx] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete };
         }
         active = ((active + direction) % total + total) % total;
         if (active < branches.length) {
@@ -4183,9 +4209,17 @@
           current.content = loaded.content;
           current.thinking = loaded.thinking;
           current.thinkingComplete = loaded.thinkingComplete;
+        } else {
+          var stashed = chat._liveReplies[parentUserIdx];
+          if (stashed) {
+            current.content = stashed.content;
+            current.thinking = stashed.thinking;
+            current.thinkingComplete = stashed.thinkingComplete;
+            delete chat._liveReplies[parentUserIdx];
+          }
         }
         chat._branchActive[parentUserIdx] = active;
-        if (!chat.incognito) persistChats();
+        if (!chat.incognito) persistChats(chat);
         renderMessages();
         placeComposer();
       }
@@ -5530,6 +5564,43 @@
         navigator.serviceWorker.register('sw.js').catch(function() {});
       }
 
+      function migrateChatBranches(chat) {
+        if (!chat || !chat._branches) return;
+        var msgs = chat.messages;
+        if (!Array.isArray(msgs)) { chat._branches = {}; chat._branchActive = {}; return; }
+        var normalized = {};
+        var keys = Object.keys(chat._branches);
+        for (var i = 0; i < keys.length; i++) {
+          var key = Number(keys[i]);
+          var arr = chat._branches[keys[i]];
+          if (isNaN(key) || key < 0 || !Array.isArray(arr) || !arr.length) continue;
+          if (msgs[key] && msgs[key].role === 'assistant' && key > 0 && msgs[key - 1] && msgs[key - 1].role === 'user') {
+            key = key - 1;
+          }
+          if (key >= msgs.length) continue;
+          if (normalized[key]) { normalized[key] = normalized[key].concat(arr); }
+          else { normalized[key] = arr; }
+        }
+        chat._branches = normalized;
+        if (chat._branchActive) {
+          var newActive = {};
+          var aKeys = Object.keys(chat._branchActive);
+          for (var j = 0; j < aKeys.length; j++) {
+            var ak = Number(aKeys[j]);
+            var av = chat._branchActive[aKeys[j]];
+            if (isNaN(ak)) continue;
+            if (msgs[ak] && msgs[ak].role === 'assistant' && ak > 0 && msgs[ak - 1] && msgs[ak - 1].role === 'user') {
+              ak = ak - 1;
+            }
+            var len = normalized[ak] ? normalized[ak].length : 0;
+            if (!len) continue;
+            if (typeof av !== 'number' || isNaN(av) || av < 0 || av > len) av = len;
+            newActive[ak] = av;
+          }
+          chat._branchActive = newActive;
+        }
+      }
+
       function init() {
         dbGetAllChats().then(function(loaded) {
           if (!loaded || !loaded.length) {
@@ -5548,6 +5619,7 @@
           }
 
           chats = chats.filter(function(c) { return !c.incognito; }).map(function(c) { c.incognito = false; return c; });
+          chats.forEach(migrateChatBranches);
           chats.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
 
           if (activeChatId && !chats.some(function(c) { return c.id === activeChatId; })) {

@@ -999,6 +999,7 @@
 
     /* Message actions */
     .message-actions {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 2px;
@@ -1009,7 +1010,8 @@
 
     .message:hover .message-actions,
     .message:focus-within .message-actions,
-    .message-actions.visible {
+    .message-actions.visible,
+    .message-actions:has(.regenerate-menu.open) {
       opacity: 1;
     }
 
@@ -1031,6 +1033,47 @@
       background: rgba(255,255,255,0.06);
       color: var(--text-secondary);
     }
+
+    /* Regenerate dropdown */
+    .regenerate-menu {
+      position: absolute;
+      bottom: calc(100% + 6px);
+      right: 0;
+      min-width: 195px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+      padding: 6px;
+      z-index: 120;
+      display: none;
+    }
+    .regenerate-menu.open { display: block; }
+    .regenerate-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 7px 9px;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 450;
+      cursor: pointer;
+      text-align: left;
+      transition: background 0.12s;
+    }
+    .regenerate-item:hover { background: rgba(255,255,255,0.05); }
+    .regenerate-item svg {
+      width: 14px;
+      height: 14px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .regenerate-item:hover svg { color: var(--text-secondary); }
 
     .msg-action svg { width: 15px; height: 15px; }
 
@@ -3555,6 +3598,8 @@
         externalLink: '<svg class="citation-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
         chevronDown: '<svg class="sources-trigger-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
         link: '<svg class="sources-trigger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+        longer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="6 13 12 19 18 13"/></svg>',
+        shorter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>',
       };
 
       var thinkingAnimTimer = null;
@@ -4680,14 +4725,62 @@
           retryBtn.title = 'Regenerate';
           retryBtn.setAttribute('aria-label', 'Regenerate response');
           retryBtn.innerHTML = ICONS.retry;
-          retryBtn.addEventListener('click', function() { regenerateMessage(msgIndex); });
+
+          var regenMenu = document.createElement('div');
+          regenMenu.className = 'regenerate-menu';
+          var regenItems = [
+            { icon: ICONS.retry, label: 'Regenerate', opts: {} },
+            { icon: ICONS.search, label: 'With Web search', opts: { searchMode: 'on' } },
+            { icon: ICONS.longer, label: 'Longer', opts: { lengthHint: 'long' } },
+            { icon: ICONS.shorter, label: 'Shorter', opts: { lengthHint: 'short' } },
+          ];
+          var regenTiers = getEffortTiers();
+          if (regenTiers && regenTiers.length) {
+            regenItems.push({ icon: ICONS.spark, label: 'Think harder', opts: { effort: regenTiers[regenTiers.length - 1] } });
+          }
+          for (var ri = 0; ri < regenItems.length; ri++) {
+            (function(item) {
+              var itemBtn = document.createElement('button');
+              itemBtn.type = 'button';
+              itemBtn.className = 'regenerate-item';
+              itemBtn.innerHTML = item.icon + '<span>' + item.label + '</span>';
+              itemBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                closeRegenerateMenus();
+                regenerateMessage(msgIndex, item.opts);
+              });
+              regenMenu.appendChild(itemBtn);
+            })(regenItems[ri]);
+          }
+          retryBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (regenMenu.classList.contains('open')) {
+              closeRegenerateMenus();
+            } else {
+              closeRegenerateMenus();
+              regenMenu.classList.add('open');
+              retryBtn.setAttribute('aria-expanded', 'true');
+            }
+          });
           actions.appendChild(retryBtn);
+          actions.appendChild(regenMenu);
         }
 
         return actions;
       }
 
-      function regenerateMessage(msgIndex) {
+      function closeRegenerateMenus() {
+        document.querySelectorAll('.regenerate-menu.open').forEach(function(m) {
+          m.classList.remove('open');
+          var act = m.closest('.message-actions');
+          if (act) {
+            var b = act.querySelector('.msg-action[title="Regenerate"]');
+            if (b) b.setAttribute('aria-expanded', 'false');
+          }
+        });
+      }
+
+      function regenerateMessage(msgIndex, opts) {
         if (activeChatId in streamControllers) return;
         var chat = getActiveChat();
         if (!chat || !chat.messages[msgIndex]) return;
@@ -4716,7 +4809,7 @@
         updateSendBtn();
         renderMessages();
         placeComposer();
-        sendMessage();
+        sendMessage(opts || {});
       }
 
       function cycleBranch(parentUserIdx, direction) {
@@ -5354,7 +5447,13 @@
         syncSettingsUI();
       }
 
-      async function sendMessage() {
+      var LENGTH_HINTS = {
+        long: 'The user requested a longer, more detailed response. Expand your answer thoroughly — cover all relevant aspects, include examples and reasoning, and do not truncate or summarize.',
+        short: 'The user requested a concise response. Keep your answer short and to the point — brief, direct, and without unnecessary detail.',
+      };
+
+      async function sendMessage(opts) {
+        opts = opts || {};
         var text = composerInput.value.trim();
         if (!text || (activeChatId in streamControllers)) return;
 
@@ -5402,12 +5501,19 @@
         renderComposerActiveTags();
 
         var initialLabel = 'Thinking.';
-        if (currentWebSearch && pendingFiles.length) {
+        var searchActive = currentWebSearch || opts.searchMode === 'on';
+        if (searchActive && pendingFiles.length) {
           initialLabel = 'Searching web \u00b7 Looking at images.';
-        } else if (currentWebSearch) {
+        } else if (searchActive) {
           initialLabel = 'Searching web.';
         } else if (currentCodeMode) {
           initialLabel = 'Writing code.';
+        } else if (opts.effort) {
+          initialLabel = 'Thinking harder.';
+        } else if (opts.lengthHint === 'long') {
+          initialLabel = 'Writing a longer response.';
+        } else if (opts.lengthHint === 'short') {
+          initialLabel = 'Writing a concise response.';
         } else if (pendingFiles.length) {
           var hasImage = false;
           for (var pi2 = 0; pi2 < pendingFiles.length; pi2++) { if (pendingFiles[pi2].type.startsWith('image/')) { hasImage = true; break; } }
@@ -5454,17 +5560,25 @@
         if (settings.systemPrompt) {
           messages = [{ role: 'system', content: settings.systemPrompt }].concat(messages);
         }
+        var lengthHint = opts.lengthHint;
+        if (lengthHint && LENGTH_HINTS[lengthHint]) {
+          messages = [{ role: 'system', content: LENGTH_HINTS[lengthHint] }].concat(messages);
+        }
+        var requestMaxTokens = settings.maxTokens;
+        if (lengthHint === 'long') {
+          requestMaxTokens = Math.min(Math.max(settings.maxTokens * 2, settings.maxTokens), 16384);
+        }
         var requestBody = {
           provider: settings.provider,
           model: actualModel,
           apiKey: effectiveKey,
           messages: messages,
           temperature: settings.temperature,
-          max_tokens: settings.maxTokens,
+          max_tokens: requestMaxTokens,
           stream: true,
           thinking: settings.thinking,
-          searchMode: currentWebSearch ? 'on' : (settings.searchMode || 'auto'),
-          effort: settings.effort || '',
+          searchMode: searchActive ? 'on' : (settings.searchMode || 'auto'),
+          effort: opts.effort || settings.effort || '',
         };
 
         if (settings.provider === 'custom') {
@@ -5789,6 +5903,11 @@
           if (wrap && !e.target.closest('#' + wrap.id)) closeEffortMenu(wrap);
         }
       });
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest('.regenerate-menu')) {
+          closeRegenerateMenus();
+        }
+      });
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
           var menus = document.querySelectorAll('.effort-menu.open');
@@ -5797,6 +5916,7 @@
             if (wrap) closeEffortMenu(wrap);
           }
           if (menus.length) e.preventDefault();
+          closeRegenerateMenus();
         }
       });
 

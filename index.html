@@ -1792,14 +1792,54 @@
       color: var(--accent);
     }
 
-    .web-search-pill.search-mode-off {
-      background: var(--bg-chip);
-      color: var(--text-faint);
-      opacity: 0.55;
-    }
-
     .web-search-pill svg { width: 15px; height: 15px; flex-shrink: 0; }
     .web-search-pill-label { white-space: nowrap; line-height: 1; }
+
+    /* Composer effort selector */
+    .composer-effort-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 26px;
+      padding: 0 8px;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      background: var(--bg-chip);
+      color: var(--text-secondary);
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .composer-effort-trigger:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+    .composer-effort-trigger .effort-trigger-chevron { width: 11px; height: 11px; }
+
+    /* Segmented control (settings) */
+    .segmented {
+      display: inline-flex;
+      gap: 2px;
+      padding: 3px;
+      background: var(--bg-chip);
+      border-radius: 10px;
+    }
+    .segmented-btn {
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      padding: 5px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .segmented-btn:hover { color: var(--text-secondary); }
+    .segmented-btn.active {
+      background: var(--bg-active);
+      color: var(--text);
+    }
 
     /* Effort selector popover */
     .effort-control-wrap {
@@ -1828,7 +1868,8 @@
       color: var(--text-muted);
       transition: transform 0.18s ease;
     }
-    .effort-trigger[aria-expanded="true"] .effort-trigger-chevron { transform: rotate(180deg); }
+    .effort-trigger[aria-expanded="true"] .effort-trigger-chevron,
+    [aria-expanded="true"] .effort-trigger-chevron { transform: rotate(180deg); }
     .effort-menu {
       position: absolute;
       top: calc(100% + 6px);
@@ -1844,6 +1885,10 @@
       display: none;
     }
     .effort-menu.open { display: block; }
+    .effort-menu-up {
+      top: auto;
+      bottom: calc(100% + 6px);
+    }
     .effort-help {
       font-size: 12px;
       line-height: 1.5;
@@ -2933,10 +2978,6 @@
                   </svg>
                 </button>
                 <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
-                <button class="web-search-pill" type="button" id="searchModeBtn" title="Web search: auto" aria-label="Web search: auto">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                  <span class="web-search-pill-label" id="searchModeLabel">Auto</span>
-                </button>
                 <div class="model-picker-wrap" id="modelPickerWrap">
                   <button class="model-picker-trigger" id="modelPickerTrigger" type="button" title="Quick model switch" aria-label="Switch model">
                     <span class="model-picker-trigger-label" id="modelPickerLabel">Model</span>
@@ -2946,6 +2987,27 @@
                     <input class="model-picker-search" id="modelPickerSearch" type="text" placeholder="Search models..." autocomplete="off" />
                     <div class="model-picker-list" id="modelPickerList"></div>
                     <button class="model-picker-add" id="modelPickerAdd" type="button">+ Add model...</button>
+                  </div>
+                </div>
+                <div class="effort-control-wrap composer-effort-wrap" id="composerEffortWrap" style="display:none;">
+                  <button type="button" class="composer-effort-trigger" id="composerEffortTrigger" aria-haspopup="true" aria-expanded="false" title="Reasoning effort">
+                    <span class="effort-trigger-label" id="composerEffortLabel">High</span>
+                    <svg class="effort-trigger-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                  <div class="effort-menu effort-menu-up" id="composerEffortMenu" role="menu">
+                    <div class="effort-help">Higher effort gives more thorough answers but takes longer and uses more tokens.</div>
+                    <div class="effort-tiers" id="composerEffortTiers"></div>
+                    <div class="effort-divider"></div>
+                    <div class="toggle-row">
+                      <div>
+                        <div class="setting-label">Thinking</div>
+                        <p class="setting-desc" style="margin-bottom:0;">Show intermediate reasoning when available.</p>
+                      </div>
+                      <label class="toggle">
+                        <input type="checkbox" id="settingThinkingComposer" checked />
+                        <span class="toggle-track"></span>
+                      </label>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3103,9 +3165,9 @@
           <div class="setting-label-row">
             <span class="setting-label">Reasoning effort</span>
           </div>
-          <div class="effort-control-wrap">
+          <div class="effort-control-wrap" id="settingsEffortWrap">
             <button type="button" class="effort-trigger" id="effortTrigger" aria-haspopup="true" aria-expanded="false">
-              <span id="effortTriggerLabel">High</span>
+              <span class="effort-trigger-label" id="effortTriggerLabel">High</span>
               <svg class="effort-trigger-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
             <div class="effort-menu" id="effortMenu" role="menu">
@@ -3123,6 +3185,18 @@
                 </label>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <div class="setting-label-row">
+            <span class="setting-label">Web search</span>
+          </div>
+          <p class="setting-desc">Auto lets the model or a built-in heuristic decide when to search.</p>
+          <div class="segmented" id="searchModeSegmented">
+            <button type="button" class="segmented-btn" data-mode="auto">Auto</button>
+            <button type="button" class="segmented-btn" data-mode="on">On</button>
+            <button type="button" class="segmented-btn" data-mode="off">Off</button>
           </div>
         </div>
       </div>
@@ -3438,6 +3512,7 @@
         maxTokens: 2048,
         thinking: true,
         effort: 'high',
+        searchMode: 'auto',
         customBaseURL: '',
         customModels: [],
         customModelId: '',
@@ -3485,6 +3560,13 @@
       var thinkingAnimTimer = null;
 
       var settings = loadJSON('omni_settings', DEFAULT_SETTINGS);
+      try {
+        var legacySearchMode = localStorage.getItem('omni_search_mode');
+        if (legacySearchMode && (legacySearchMode === 'on' || legacySearchMode === 'off' || legacySearchMode === 'auto') && settings.searchMode == null) {
+          settings.searchMode = legacySearchMode;
+        }
+        localStorage.removeItem('omni_search_mode');
+      } catch (_) {}
       settings = mergeSettings(settings);
 
       var chats = [];
@@ -3639,7 +3721,7 @@
         return EFFORT_LABELS[tier] || String(tier);
       }
 
-      function buildEffortTierRow(tier) {
+      function buildEffortTierRow(tier, wrap) {
         var m = getActiveModelConfig() || {};
         var row = document.createElement('button');
         row.type = 'button';
@@ -3675,21 +3757,22 @@
         row.appendChild(check);
         row.addEventListener('click', function() {
           settings.effort = tier;
-          renderEffortMenuTiers();
-          closeEffortMenu();
+          renderEffortMenuTiers(wrap);
+          closeEffortMenu(wrap);
         });
         return row;
       }
 
-      function renderEffortMenuTiers() {
-        var container = $('effortTiers');
+      function renderEffortMenuTiers(wrap) {
+        if (!wrap) return;
+        var container = wrap.querySelector('.effort-tiers');
         if (!container) return;
         container.innerHTML = '';
         var tiers = getEffortTiers();
         if (!tiers) return;
-        for (var i = 0; i < tiers.length; i++) { container.appendChild(buildEffortTierRow(tiers[i])); }
-        var trigger = $('effortTriggerLabel');
-        if (trigger) trigger.textContent = effortTierLabel(settings.effort);
+        for (var i = 0; i < tiers.length; i++) { container.appendChild(buildEffortTierRow(tiers[i], wrap)); }
+        var labelEl = wrap.querySelector('.effort-trigger-label');
+        if (labelEl) labelEl.textContent = effortTierLabel(settings.effort);
       }
 
       function renderEffortControl() {
@@ -3699,22 +3782,36 @@
         group.style.display = tiers ? '' : 'none';
         if (!tiers) return;
         clampEffort();
-        renderEffortMenuTiers();
+        renderEffortMenuTiers($('settingsEffortWrap'));
         var menuToggle = $('settingThinkingMenu');
         if (menuToggle) menuToggle.checked = !!settings.thinking;
       }
 
-      function openEffortMenu() {
-        var trigger = $('effortTrigger');
-        var menu = $('effortMenu');
+      function updateComposerEffort() {
+        var wrap = $('composerEffortWrap');
+        if (!wrap) return;
+        var tiers = getEffortTiers();
+        wrap.style.display = tiers ? '' : 'none';
+        if (!tiers) return;
+        clampEffort();
+        renderEffortMenuTiers(wrap);
+        var composerToggle = $('settingThinkingComposer');
+        if (composerToggle) composerToggle.checked = !!settings.thinking;
+      }
+
+      function openEffortMenu(wrap) {
+        if (!wrap) return;
+        var trigger = wrap.querySelector('.effort-trigger, .composer-effort-trigger');
+        var menu = wrap.querySelector('.effort-menu');
         if (!trigger || !menu) return;
         trigger.setAttribute('aria-expanded', 'true');
         menu.classList.add('open');
       }
 
-      function closeEffortMenu() {
-        var trigger = $('effortTrigger');
-        var menu = $('effortMenu');
+      function closeEffortMenu(wrap) {
+        if (!wrap) return;
+        var trigger = wrap.querySelector('.effort-trigger, .composer-effort-trigger');
+        var menu = wrap.querySelector('.effort-menu');
         if (!trigger || !menu) return;
         trigger.setAttribute('aria-expanded', 'false');
         menu.classList.remove('open');
@@ -4083,6 +4180,7 @@
         settings.model = val;
         settings.customModelId = '';
         clampEffort();
+        updateComposerEffort();
         var availModels = getAvailableModels(settings.provider);
         var inPreset = false;
         for (var i = 0; i < availModels.length; i++) {
@@ -5174,7 +5272,8 @@
         renderCustomModels();
         toggleCustomSection();
         renderEffortControl();
-        closeEffortMenu();
+        closeEffortMenu($('settingsEffortWrap'));
+        renderSearchModeControl();
 
         updateProviderPlaceholder();
         updateProviderURLInfo();
@@ -5364,7 +5463,7 @@
           max_tokens: settings.maxTokens,
           stream: true,
           thinking: settings.thinking,
-          searchMode: currentWebSearch ? 'on' : searchMode,
+          searchMode: currentWebSearch ? 'on' : (settings.searchMode || 'auto'),
           effort: settings.effort || '',
         };
 
@@ -5651,30 +5750,53 @@
 
       $('effortTrigger').addEventListener('click', function(e) {
         e.stopPropagation();
-        var menu = $('effortMenu');
-        if (menu && menu.classList.contains('open')) closeEffortMenu();
-        else openEffortMenu();
+        var wrap = $('settingsEffortWrap');
+        var menu = wrap ? wrap.querySelector('.effort-menu') : null;
+        if (menu && menu.classList.contains('open')) closeEffortMenu(wrap);
+        else openEffortMenu(wrap);
       });
 
+      $('composerEffortTrigger').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var wrap = $('composerEffortWrap');
+        var menu = wrap ? wrap.querySelector('.effort-menu') : null;
+        if (menu && menu.classList.contains('open')) closeEffortMenu(wrap);
+        else openEffortMenu(wrap);
+      });
+
+      function syncThinkingToggles() {
+        $('settingThinking').checked = settings.thinking;
+        $('settingThinkingMenu').checked = settings.thinking;
+        $('settingThinkingComposer').checked = settings.thinking;
+      }
       $('settingThinkingMenu').addEventListener('change', function() {
         settings.thinking = $('settingThinkingMenu').checked;
-        $('settingThinking').checked = settings.thinking;
+        syncThinkingToggles();
+      });
+      $('settingThinkingComposer').addEventListener('change', function() {
+        settings.thinking = $('settingThinkingComposer').checked;
+        syncThinkingToggles();
       });
       $('settingThinking').addEventListener('change', function() {
         settings.thinking = $('settingThinking').checked;
-        $('settingThinkingMenu').checked = settings.thinking;
+        syncThinkingToggles();
       });
 
       document.addEventListener('click', function(e) {
-        var menu = $('effortMenu');
-        if (menu && menu.classList.contains('open') && !e.target.closest('.effort-control-wrap')) {
-          closeEffortMenu();
+        var menus = document.querySelectorAll('.effort-menu.open');
+        for (var i = 0; i < menus.length; i++) {
+          var wrap = menus[i].closest('.effort-control-wrap');
+          if (wrap && !e.target.closest('#' + wrap.id)) closeEffortMenu(wrap);
         }
       });
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
-          var menu = $('effortMenu');
-          if (menu && menu.classList.contains('open')) { e.preventDefault(); closeEffortMenu(); return; }
+          var menus = document.querySelectorAll('.effort-menu.open');
+          for (var i = 0; i < menus.length; i++) {
+            var wrap = menus[i].closest('.effort-control-wrap');
+            if (wrap) closeEffortMenu(wrap);
+          }
+          if (menus.length) e.preventDefault();
         }
       });
 
@@ -5730,28 +5852,16 @@
 
       var pendingFiles = [];
       var webSearch = false;
-      var searchMode = localStorage.getItem('omni_search_mode') || 'auto';
-      if (searchMode !== 'on' && searchMode !== 'off' && searchMode !== 'auto') searchMode = 'auto';
 
-      function renderSearchModeBtn() {
-        var btn = $('searchModeBtn');
-        var label = $('searchModeLabel');
-        if (!btn) return;
-        var labels = { auto: 'Auto', on: 'On', off: 'Off' };
-        var titles = { auto: 'Web search: auto', on: 'Web search: on', off: 'Web search: off' };
-        label.textContent = labels[searchMode];
-        btn.title = titles[searchMode];
-        btn.setAttribute('aria-label', titles[searchMode]);
-        btn.classList.toggle('active-search', searchMode === 'on');
-        btn.classList.toggle('search-mode-off', searchMode === 'off');
-      }
-
-      function cycleSearchMode() {
-        var next = searchMode === 'auto' ? 'on' : searchMode === 'on' ? 'off' : 'auto';
-        searchMode = next;
-        try { localStorage.setItem('omni_search_mode', searchMode); } catch (_) {}
-        renderSearchModeBtn();
-        showToast('Web search: ' + next + (next === 'auto' ? ' (model decides)' : ''), 'info');
+      function renderSearchModeControl() {
+        var seg = $('searchModeSegmented');
+        if (!seg) return;
+        var mode = settings.searchMode === 'on' || settings.searchMode === 'off' ? settings.searchMode : 'auto';
+        settings.searchMode = mode;
+        var btns = seg.querySelectorAll('.segmented-btn');
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].classList.toggle('active', btns[i].getAttribute('data-mode') === mode);
+        }
       }
 
       function clearPendingFiles() {
@@ -6116,7 +6226,12 @@
 
       $('micBtn').addEventListener('click', toggleSpeechRecognition);
       $('attachBtn').addEventListener('click', function() { $('fileInput').click(); });
-      $('searchModeBtn').addEventListener('click', cycleSearchMode);
+      $('searchModeSegmented').addEventListener('click', function(e) {
+        var btn = e.target.closest('.segmented-btn');
+        if (!btn) return;
+        settings.searchMode = btn.getAttribute('data-mode') === 'on' || btn.getAttribute('data-mode') === 'off' ? btn.getAttribute('data-mode') : 'auto';
+        renderSearchModeControl();
+      });
       $('fileInput').addEventListener('change', function(e) {
         var files = e.target.files;
         if (!files || !files.length) return;
@@ -6335,7 +6450,7 @@
           renderAll();
           syncSettingsUI();
           updateSendBtn();
-          renderSearchModeBtn();
+          updateComposerEffort();
 
           updateComposerNote();
           populateComposerModelSelect();

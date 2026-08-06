@@ -42,7 +42,7 @@ function streamToNDJSON(readable) {
   });
 }
 
-function buildOpenAIRequest(model, messages, temperature, maxTokens) {
+function buildOpenAIRequest(model, messages, temperature, maxTokens, effort) {
   const isOModel = /^o[0-9]/.test(model);
   const body = {
     model,
@@ -54,6 +54,9 @@ function buildOpenAIRequest(model, messages, temperature, maxTokens) {
   } else {
     body.max_tokens = maxTokens;
     body.temperature = temperature;
+  }
+  if (effort) {
+    body.reasoning_effort = effort;
   }
   return body;
 }
@@ -74,7 +77,18 @@ function translateToAnthropicContent(content) {
   });
 }
 
-function buildAnthropicRequest(model, messages, temperature, maxTokens, thinking) {
+const ANTHROPIC_EFFORT_BUDGET = { standard: 4096, high: 8192, max: 16384 };
+const GOOGLE_EFFORT_BUDGET = { standard: 2048, high: 8192, max: 16384 };
+
+function anthropicSearchTool(model) {
+  const legacy = model.indexOf('haiku-4-5') !== -1 || model.indexOf('sonnet-4-5') !== -1;
+  if (legacy) {
+    return { type: 'web_search_20250305', name: 'web_search', max_uses: 5, allowed_callers: ['direct'] };
+  }
+  return { type: 'web_search_20260318', name: 'web_search', max_uses: 5 };
+}
+
+function buildAnthropicRequest(model, messages, temperature, maxTokens, effortBudget, searchTool) {
   const systemMessages = messages.filter((m) => m.role === 'system').map((m) => m.content);
   const chatMessages = messages.filter((m) => m.role !== 'system');
 
@@ -92,8 +106,19 @@ function buildAnthropicRequest(model, messages, temperature, maxTokens, thinking
     body.system = systemMessages.map((s) => ({ type: 'text', text: s }));
     if (body.system.length === 1) body.system = body.system[0].text;
   }
-  if (thinking) {
-    body.thinking = { type: 'enabled', budget_tokens: 4096 };
+  if (searchTool) {
+    body.tools = [searchTool];
+    const steer = 'Use the web search tool when the request depends on current, changing, or out-of-training-data information (news, prices, scores, recent events). Answer directly from stable knowledge without searching otherwise. Cite sources in your reply.';
+    if (body.system) {
+      const existing = Array.isArray(body.system) ? body.system : [{ type: 'text', text: String(body.system) }];
+      body.system = existing.concat([{ type: 'text', text: steer }]);
+    } else {
+      body.system = steer;
+    }
+  }
+  if (effortBudget) {
+    const budget = Math.min(Math.max(effortBudget, 1024), Math.max(maxTokens - 1, 1024));
+    body.thinking = { type: 'enabled', budget_tokens: budget };
   }
   return body;
 }
@@ -118,7 +143,7 @@ function translateToGoogleParts(content) {
   return parts.length ? parts : [{ text: '' }];
 }
 
-function buildGoogleRequest(model, messages, temperature, maxTokens, thinking) {
+function buildGoogleRequest(model, messages, temperature, maxTokens, effortBudget) {
   const systemMsg = messages.filter((m) => m.role === 'system');
   const chatMsg = messages.filter((m) => m.role !== 'system');
 
@@ -139,13 +164,13 @@ function buildGoogleRequest(model, messages, temperature, maxTokens, thinking) {
       parts: [{ text: systemMsg.map((s) => s.content).join('\n\n') }],
     };
   }
-  if (thinking) {
-    body.generationConfig.thinkingConfig = { includeThoughts: true };
+  if (effortBudget) {
+    body.generationConfig.thinkingConfig = { includeThoughts: true, thinkingBudget: effortBudget };
   }
   return body;
 }
 
-async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer) {
+async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer, collectCitations) {
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -164,6 +189,25 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer)
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  const citedSources = [];
+  const citedUrls = new Set();
+
+  const collectAnnotations = (annotations) => {
+    if (!collectCitations || !Array.isArray(annotations)) return;
+    for (const a of annotations) {
+      const uc = a && a.type === 'url_citation' ? a.url_citation : null;
+      if (!uc || !uc.url || citedUrls.has(uc.url)) continue;
+      citedUrls.add(uc.url);
+      citedSources.push({ title: (uc.title || uc.url).slice(0, 160), url: uc.url, date: '' });
+      if (citedSources.length >= 10) return;
+    }
+  };
+
+  const emitCitedSources = async () => {
+    if (citedSources.length) {
+      await writer.write(encoder.encode(JSON.stringify({ search: { query: '', sources: citedSources } }) + '\n'));
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -183,6 +227,8 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer)
         const choices = parsed.choices;
         if (choices && choices[0]) {
           const delta = choices[0].delta;
+          collectAnnotations(delta && delta.annotations);
+          collectAnnotations(choices[0].message && choices[0].message.annotations);
           const content = delta ? (delta.content || delta.text || '') : '';
 
           if (content) {
@@ -210,6 +256,8 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer)
     try {
       const parsed = JSON.parse(buffer.trim().slice(6));
       const delta = parsed.choices?.[0]?.delta;
+      collectAnnotations(delta && delta.annotations);
+      collectAnnotations(parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.annotations);
       if (delta?.content) {
         await writer.write(encoder.encode(JSON.stringify({ delta: delta.content }) + '\n'));
       }
@@ -224,6 +272,7 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer)
       }
     } catch (_) { /* skip */ }
   }
+  await emitCitedSources();
 }
 
 async function streamAnthropic(apiKey, requestBody, encoder, writer) {
@@ -248,6 +297,8 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
   const decoder = new TextDecoder();
   let buffer = '';
   let currentEvent = '';
+  const searchSources = [];
+  const seenSearchUrls = new Set();
 
   while (true) {
     const { done, value } = await reader.read();
@@ -269,7 +320,17 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
         const parsed = JSON.parse(data);
         const type = parsed.type || '';
 
-        if (type === 'content_block_delta') {
+        if (type === 'content_block_start' && parsed.content_block && parsed.content_block.type === 'web_search_tool_result') {
+          const results = parsed.content_block.content;
+          if (Array.isArray(results)) {
+            for (const r of results) {
+              if (!r || r.type !== 'web_search_result' || !r.url || seenSearchUrls.has(r.url)) continue;
+              seenSearchUrls.add(r.url);
+              searchSources.push({ title: (r.title || r.url).slice(0, 160), url: r.url, date: (r.page_age || '').slice(0, 10) });
+              if (searchSources.length >= 10) break;
+            }
+          }
+        } else if (type === 'content_block_delta') {
           const deltaType = parsed.delta?.type;
           if (deltaType === 'text_delta') {
             await writer.write(encoder.encode(JSON.stringify({ delta: parsed.delta.text }) + '\n'));
@@ -294,9 +355,12 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
       } catch (_) { /* skip */ }
     }
   }
+  if (searchSources.length) {
+    await writer.write(encoder.encode(JSON.stringify({ search: { query: '', sources: searchSources } }) + '\n'));
+  }
 }
 
-async function streamGoogle(model, apiKey, requestBody, encoder, writer) {
+async function streamGoogle(model, apiKey, requestBody, encoder, writer, collectGrounding) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
   const response = await fetch(url, {
     method: 'POST',
@@ -316,6 +380,19 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  const searchSources = [];
+  const seenSearchUrls = new Set();
+
+  const collectChunks = (groundingMetadata) => {
+    if (!collectGrounding || !groundingMetadata || !Array.isArray(groundingMetadata.groundingChunks)) return;
+    for (const chunk of groundingMetadata.groundingChunks) {
+      const web = chunk && chunk.web;
+      if (!web || !web.uri || seenSearchUrls.has(web.uri)) continue;
+      seenSearchUrls.add(web.uri);
+      searchSources.push({ title: (web.title || web.uri).slice(0, 160), url: web.uri, date: '' });
+      if (searchSources.length >= 10) return;
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -350,6 +427,7 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer) {
         const candidates = parsed.candidates;
         if (candidates && candidates.length) {
           for (const candidate of candidates) {
+            collectChunks(candidate.groundingMetadata);
             const parts = candidate.content?.parts;
             if (parts) {
               for (const part of parts) {
@@ -365,6 +443,9 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer) {
         }
       } catch (_) { /* skip */ }
     }
+  }
+  if (searchSources.length) {
+    await writer.write(encoder.encode(JSON.stringify({ search: { query: '', sources: searchSources } }) + '\n'));
   }
 }
 
@@ -385,96 +466,107 @@ export default {
       return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
     }
 
-    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL, web_search } = body;
+    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL, web_search, searchMode: rawSearchMode, effort } = body;
 
     if (!provider) return jsonResponse({ error: { message: 'Missing provider' } }, 400);
     if (!model) return jsonResponse({ error: { message: 'Missing model' } }, 400);
     if (!apiKey) return jsonResponse({ error: { message: 'Missing API key' } }, 400);
     if (!messages || !messages.length) return jsonResponse({ error: { message: 'Missing messages' } }, 400);
 
+    const searchMode = rawSearchMode === 'on' || rawSearchMode === 'off' || rawSearchMode === 'auto' ? rawSearchMode : (web_search ? 'on' : 'auto');
+    const effortTier = typeof effort === 'string' && effort ? effort : null;
+
     var searchResults = '';
     var searchEvent = null;
-    if (web_search && !(provider === 'groq' && model && model.indexOf('groq/') === 0)) {
-      const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
-      const originAllowed = !reqOrigin || ALLOWED_ORIGINS.some(function(o) { return reqOrigin.indexOf(o) === 0; });
-      if (originAllowed) {
-        const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
-        let counter = 0;
-        try {
-          const val = await env.SEARCH_COUNTER.get(monthKey);
-          counter = val ? parseInt(val, 10) : 0;
-        } catch (e) { console.error('KV READ FAILED:', e.message); }
-        if (counter >= MONTHLY_CAP) {
-          console.error('TAVILY CAP HIT:', monthKey, counter);
-          searchEvent = { search: { error: 'Monthly search cap reached (' + MONTHLY_CAP + ').' } };
-        } else {
-          const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-          const rawQuery = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
-          const queries = buildSearchQueries(rawQuery);
-          if (queries.length) {
-            const outcomes = await Promise.all(queries.map(function(q) {
-              return runTavilySearch(q, env.TAVILY_API_KEY).then(function(data) {
-                return data ? { data: data } : { error: 'Search provider error (check TAVILY_API_KEY).' };
-              }).catch(function(e) {
-                console.error('TAVILY THREW:', e.message);
-                return { error: 'Search failed: ' + (e.message || 'unknown error') };
-              });
-            }));
-            const merged = [];
-            const seenUrls = new Set();
-            let searchSummary = '';
-            for (var oi = 0; oi < outcomes.length; oi++) {
-              if (!outcomes[oi].data) continue;
-              if (outcomes[oi].data.answer && !searchSummary) {
-                searchSummary = String(outcomes[oi].data.answer).slice(0, 1400);
-              }
-              var dataResults = outcomes[oi].data.results || [];
-              for (var ri = 0; ri < dataResults.length; ri++) {
-                var r = dataResults[ri];
-                if (!r || !r.url || seenUrls.has(r.url)) continue;
-                seenUrls.add(r.url);
-                merged.push(r);
-                if (merged.length >= 10) break;
-              }
-            }
-            ctx.waitUntil(
-              (async function() {
-                try { await env.SEARCH_COUNTER.put(monthKey, String(counter + queries.length), { expirationTtl: 3456000 }); }
-                catch (e) { console.error('KV WRITE FAILED:', e.message); }
-              })()
-            );
-            if (merged.length) {
-              const sources = merged.map(function(r) {
-                return {
-                  title: (r.title || 'Untitled').slice(0, 160),
-                  url: r.url || '',
-                  date: (r.published_date || '').slice(0, 10),
-                  snippet: (r.content || '').slice(0, 240),
-                };
-              });
-              searchEvent = { search: { query: queries[0], sources: sources } };
-              searchResults = 'Web search results (current, sourced):\n\n' +
-                (searchSummary ? 'Search summary:\n' + searchSummary + '\n\n' : '') +
-                merged.map(function(r, i) {
-                  var entry = '[' + (i + 1) + '] ' + (r.title || 'Untitled');
-                  if (r.url) entry += '\n   Source: ' + r.url;
-                  if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
-                  entry += '\n   ' + (r.content || '');
-                  return entry;
-                }).join('\n\n') +
-                '\n\nAnswer the user query using these results. Cite sources inline as [1], [2], etc. Prefer recent results for time-sensitive questions. If the results do not cover the question, say so clearly instead of guessing.';
-            } else {
-              var failedOutcome = null;
-              for (var ei = 0; ei < outcomes.length; ei++) { if (outcomes[ei].error) { failedOutcome = outcomes[ei].error; break; } }
-              searchEvent = { search: { error: failedOutcome || 'No web results found.' } };
-            }
+
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+    const lastUserText = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
+
+    const groqNative = provider === 'groq' && (model.indexOf('groq/') === 0 || /^openai\/gpt-oss-(20b|120b)$/.test(model));
+    const isNativeSearch = provider === 'anthropic' || provider === 'google' || provider === 'openrouter' || groqNative;
+
+    if (!isNativeSearch && searchMode !== 'off') {
+      const force = searchMode === 'on';
+      if (force || shouldAutoSearch(lastUserText)) {
+        const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
+        const originAllowed = !reqOrigin || ALLOWED_ORIGINS.some(function(o) { return reqOrigin.indexOf(o) === 0; });
+        if (originAllowed) {
+          const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
+          let counter = 0;
+          try {
+            const val = await env.SEARCH_COUNTER.get(monthKey);
+            counter = val ? parseInt(val, 10) : 0;
+          } catch (e) { console.error('KV READ FAILED:', e.message); }
+          if (counter >= MONTHLY_CAP) {
+            console.error('TAVILY CAP HIT:', monthKey, counter);
+            searchEvent = { search: { error: 'Monthly search cap reached (' + MONTHLY_CAP + ').' } };
           } else {
-            searchEvent = { search: { error: 'No query provided for search.' } };
+            const queries = buildSearchQueries(lastUserText);
+            if (queries.length) {
+              const outcomes = await Promise.all(queries.map(function(q) {
+                return runTavilySearch(q, env.TAVILY_API_KEY).then(function(data) {
+                  return data ? { data: data } : { error: 'Search provider error (check TAVILY_API_KEY).' };
+                }).catch(function(e) {
+                  console.error('TAVILY THREW:', e.message);
+                  return { error: 'Search failed: ' + (e.message || 'unknown error') };
+                });
+              }));
+              const merged = [];
+              const seenUrls = new Set();
+              let searchSummary = '';
+              for (var oi = 0; oi < outcomes.length; oi++) {
+                if (!outcomes[oi].data) continue;
+                if (outcomes[oi].data.answer && !searchSummary) {
+                  searchSummary = String(outcomes[oi].data.answer).slice(0, 1400);
+                }
+                var dataResults = outcomes[oi].data.results || [];
+                for (var ri = 0; ri < dataResults.length; ri++) {
+                  var r = dataResults[ri];
+                  if (!r || !r.url || seenUrls.has(r.url)) continue;
+                  seenUrls.add(r.url);
+                  merged.push(r);
+                  if (merged.length >= 10) break;
+                }
+              }
+              ctx.waitUntil(
+                (async function() {
+                  try { await env.SEARCH_COUNTER.put(monthKey, String(counter + queries.length), { expirationTtl: 3456000 }); }
+                  catch (e) { console.error('KV WRITE FAILED:', e.message); }
+                })()
+              );
+              if (merged.length) {
+                const sources = merged.map(function(r) {
+                  return {
+                    title: (r.title || 'Untitled').slice(0, 160),
+                    url: r.url || '',
+                    date: (r.published_date || '').slice(0, 10),
+                    snippet: (r.content || '').slice(0, 240),
+                  };
+                });
+                searchEvent = { search: { query: queries[0], sources: sources } };
+                searchResults = 'Web search results (current, sourced):\n\n' +
+                  (searchSummary ? 'Search summary:\n' + searchSummary + '\n\n' : '') +
+                  merged.map(function(r, i) {
+                    var entry = '[' + (i + 1) + '] ' + (r.title || 'Untitled');
+                    if (r.url) entry += '\n   Source: ' + r.url;
+                    if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
+                    entry += '\n   ' + (r.content || '');
+                    return entry;
+                  }).join('\n\n') +
+                  '\n\nAnswer the user query using these results. Cite sources inline as [1], [2], etc. Prefer recent results for time-sensitive questions. If the results do not cover the question, say so clearly instead of guessing.';
+              } else {
+                var failedOutcome = null;
+                for (var ei = 0; ei < outcomes.length; ei++) { if (outcomes[ei].error) { failedOutcome = outcomes[ei].error; break; } }
+                searchEvent = { search: { error: failedOutcome || 'No web results found.' } };
+              }
+            } else {
+              searchEvent = { search: { error: 'No query provided for search.' } };
+            }
           }
+        } else {
+          console.error('SEARCH ORIGIN BLOCKED:', reqOrigin);
+          searchEvent = { search: { error: 'Search blocked for this origin.' } };
         }
-      } else {
-        console.error('SEARCH ORIGIN BLOCKED:', reqOrigin);
-        searchEvent = { search: { error: 'Search blocked for this origin.' } };
       }
     }
 
@@ -516,9 +608,20 @@ export default {
       return [cleaned];
     }
 
+    function shouldAutoSearch(text) {
+      const q = String(text || '').replace(/\[Attached:[^\]]*\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 600);
+      if (!q) return false;
+      const lower = q.toLowerCase();
+      const TIME = /\b(today|tonight|yesterday|tomorrow|this week|this month|this year|right now|currently|now)\b/;
+      const FRESH = /\b(latest|recent|recently|breaking|news|update|updates|updated|announced|announcement|launched|launch|released|release)\b/;
+      const VOLATILE = /\b(price|prices|pricing|cost|stock|stocks|share price|score|scores|result|results|election|elections|weather|forecast|odds|ranking|rankings)\b/;
+      const DATES = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\b|\b20\d\d\b|\bas of\b/;
+      const STEMS = /\b(who won|what happened|how is|how are|where is|what's the score|what is the score|what's new|whats new)\b/;
+      return TIME.test(lower) || FRESH.test(lower) || VOLATILE.test(lower) || DATES.test(lower) || STEMS.test(lower);
+    }
+
     const temp = typeof temperature === 'number' ? temperature : 0.7;
     const maxOut = typeof max_tokens === 'number' ? max_tokens : 2048;
-    const useThinking = !!thinking;
     const safeMessages = messages.map((m) => ({
       role: m.role,
       content: m.content,
@@ -547,71 +650,83 @@ export default {
         switch (provider) {
           case 'openai': {
             const url = PROVIDER_URLS.openai;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'cerebras': {
             const url = PROVIDER_URLS.cerebras;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'nvidia': {
             const url = PROVIDER_URLS.nvidia;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'moonshot': {
             const url = PROVIDER_URLS.moonshot;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'groq': {
             const url = PROVIDER_URLS.groq;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
+            if (searchMode !== 'off' && /^openai\/gpt-oss-(20b|120b)$/.test(model)) {
+              reqBody.tools = [{ type: 'browser_search' }];
+            }
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'together': {
             const url = PROVIDER_URLS.together;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'deepseek': {
             const url = PROVIDER_URLS.deepseek;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
+            if (effortTier) reqBody.thinking = { type: 'enabled' };
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'xai': {
             const url = PROVIDER_URLS.xai;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
-            if (web_search) reqBody.search_parameters = { mode: 'on' };
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
+            if (searchMode === 'on') reqBody.search_parameters = { mode: 'on' };
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'openrouter': {
             const url = PROVIDER_URLS.openrouter;
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
-            await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
+            if (effortTier) reqBody.reasoning = { effort: effortTier };
+            if (searchMode !== 'off') {
+              reqBody.tools = [{ type: 'openrouter:web_search', parameters: { max_results: 5, max_uses: 5 } }];
+            }
+            await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer, searchMode !== 'off');
             break;
           }
           case 'anthropic': {
-            const reqBody = buildAnthropicRequest(model, safeMessages, temp, maxOut, useThinking);
+            const effortBudget = ANTHROPIC_EFFORT_BUDGET[effortTier] || null;
+            const searchTool = searchMode !== 'off' ? anthropicSearchTool(model) : null;
+            const reqBody = buildAnthropicRequest(model, safeMessages, temp, maxOut, effortBudget, searchTool);
             await streamAnthropic(apiKey, reqBody, encoder, writer);
             break;
           }
           case 'google': {
-            const reqBody = buildGoogleRequest(model, safeMessages, temp, maxOut, useThinking);
-            if (web_search) {
+            const effortBudget = GOOGLE_EFFORT_BUDGET[effortTier] || null;
+            const reqBody = buildGoogleRequest(model, safeMessages, temp, maxOut, effortBudget);
+            const useNativeSearch = searchMode !== 'off' && model.indexOf('gemini') === 0;
+            if (useNativeSearch) {
               if (!reqBody.tools) reqBody.tools = [{ googleSearch: {} }];
               else reqBody.tools.push({ googleSearch: {} });
             }
-            await streamGoogle(model, apiKey, reqBody, encoder, writer);
+            await streamGoogle(model, apiKey, reqBody, encoder, writer, useNativeSearch);
             break;
           }
           case 'custom': {
@@ -619,7 +734,7 @@ export default {
               await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Missing base URL for custom provider' } }) + '\n'));
               break;
             }
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
             await streamOpenAICompatible(baseURL, apiKey, reqBody, encoder, writer);
             break;
           }

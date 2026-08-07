@@ -16,7 +16,7 @@ const PROVIDER_URLS = {
 };
 
 const ALLOWED_ORIGINS = [
-  'https://claude-like-ai-wrapper.rafandra-aydin.workers.dev',
+  'https://claude-like-ai-wrapper.wimmboo.workers.dev',
 ];
 
 const MONTHLY_CAP = 900;

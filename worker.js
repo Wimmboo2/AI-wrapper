@@ -626,6 +626,13 @@ export default {
       role: m.role,
       content: m.content,
     }));
+
+    function stripImageParts(content) {
+      if (!Array.isArray(content)) return content;
+      const kept = content.filter((p) => !p || p.type !== 'image_url');
+      if (!kept.length) return '[Image attachment not supported by this model \u2014 removed]';
+      return kept;
+    }
     if (searchResults) {
       for (var si = safeMessages.length - 1; si >= 0; si--) {
         if (safeMessages[si].role === 'user') {
@@ -637,6 +644,8 @@ export default {
         }
       }
     }
+
+    const deepseekMessages = provider === 'deepseek' ? safeMessages.map((m) => ({ role: m.role, content: stripImageParts(m.content) })) : safeMessages;
 
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
@@ -689,7 +698,7 @@ export default {
           }
           case 'deepseek': {
             const url = PROVIDER_URLS.deepseek;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier);
+            const reqBody = buildOpenAIRequest(model, deepseekMessages, temp, maxOut, effortTier);
             if (effortTier) reqBody.thinking = { type: 'enabled' };
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;

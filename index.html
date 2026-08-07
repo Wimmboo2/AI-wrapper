@@ -3816,6 +3816,12 @@
         for (var i = 0; i < models.length; i++) {
           if (models[i].id === settings.model) return models[i];
         }
+        var quick = (settings.quickCustomModels || []).filter(function(m) { return m.provider === settings.provider; });
+        for (var q = 0; q < quick.length; q++) {
+          if (quick[q].id === settings.model) {
+            return { id: quick[q].id, name: quick[q].name || quick[q].id, ctx: quick[q].ctx || 8192 };
+          }
+        }
         return models.length ? models[0] : null;
       }
 
@@ -4442,6 +4448,9 @@
         toggleCustomSection();
         updateProviderPlaceholder();
         updateProviderURLInfo();
+        clampEffort();
+        renderEffortControl();
+        updateComposerEffort();
         populateComposerModelSelect();
         updateProviderPickerLabel();
         closeProviderPicker();
@@ -4525,6 +4534,7 @@
 
         saveSettings();
         populateComposerModelSelect();
+        updateComposerEffort();
 
         updateMetrics(null);
         showToast(editingModelId !== null ? 'Model updated' : 'Model added: ' + name, 'info');
@@ -5089,12 +5099,22 @@
         if (!chat || chat.id !== editingState.chatId) { cancelMessageEdit(); return; }
         var msgIndex = editingState.msgIndex;
         if (!chat.messages[msgIndex] || chat.messages[msgIndex].role !== 'user') { cancelMessageEdit(); return; }
-        chat.messages = chat.messages.slice(0, msgIndex);
+        var msg = chat.messages[msgIndex];
+        var payload = buildUserMessagePayload(text, pendingFiles, true);
+        msg.content = payload.displayContent;
+        msg._apiContent = payload.userContent;
+        chat.messages = chat.messages.slice(0, msgIndex + 1);
         chat.metrics = null;
-        if (!chat.incognito) persistChats();
+        if (!chat.incognito) persistChats(chat);
         editingState = null;
         renderEditBanner();
-        sendMessage();
+        composerInput.value = '';
+        clearPendingFiles();
+        autoResize();
+        updateSendBtn();
+        renderMessages();
+        placeComposer();
+        sendMessage({ skipUserPush: true });
       }
 
       function beginEditMessage(msgIndex, role) {
@@ -5611,6 +5631,7 @@
         renderEffortControl();
         closeEffortMenu($('settingsEffortWrap'));
         renderSearchModeControl();
+        updateComposerEffort();
 
         updateProviderPlaceholder();
         updateProviderURLInfo();
@@ -5682,6 +5703,7 @@
 
         updateComposerNote();
         populateComposerModelSelect();
+        updateComposerEffort();
         showToast('Settings saved', 'info');
       }
 
@@ -5696,30 +5718,18 @@
         short: 'The user requested a concise response. Keep your answer short and to the point — brief, direct, and without unnecessary detail.',
       };
 
-      async function sendMessage(opts) {
-        opts = opts || {};
-        var text = composerInput.value.trim();
-        if (!text || (activeChatId in streamControllers)) return;
-
-        if (!settings.apiEndpoint) { showToast('Set your API endpoint in Settings first'); return; }
-        var effectiveKey = settings.apiKeys[settings.provider] || settings.apiKey;
-        if (!effectiveKey) { showToast('Set your API key in Settings first'); return; }
-
-        var chat = getActiveChat();
-        if (!chat) { chat = createChat({ asIncognito: incognito }); }
-
+      function buildUserMessagePayload(text, files, skipPrefix) {
         var userContent = text;
         var displayContent = text;
-        if (activeTemplate && activeTemplate.prefix) {
+        if (!skipPrefix && activeTemplate && activeTemplate.prefix) {
           userContent = activeTemplate.prefix + text;
         }
-
-        if (pendingFiles.length) {
+        if (files && files.length) {
           var parts = [];
           if (userContent) parts.push({ type: 'text', text: typeof userContent === 'string' ? userContent : text });
           var fileNames = [];
-          for (var fi = 0; fi < pendingFiles.length; fi++) {
-            var f = pendingFiles[fi];
+          for (var fi = 0; fi < files.length; fi++) {
+            var f = files[fi];
             fileNames.push(f.name);
             if (f.type.startsWith('image/')) {
               parts.push({ type: 'image_url', image_url: { url: f.data, detail: 'auto' } });
@@ -5730,10 +5740,33 @@
           userContent = parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts;
           displayContent = text ? text + '\n\n[Attached: ' + fileNames.join(', ') + ']' : '[Attached: ' + fileNames.join(', ') + ']';
         }
+        return { userContent: userContent, displayContent: displayContent };
+      }
 
-        chat.messages.push({ role: 'user', content: displayContent, _apiContent: userContent });
-        updateChatTitle(chat, text);
-        if (!chat.incognito) persistChats();
+      async function sendMessage(opts) {
+        opts = opts || {};
+        var text = composerInput.value.trim();
+        if (activeChatId in streamControllers) return;
+        if (!opts.skipUserPush && !text) return;
+
+        if (!settings.apiEndpoint) { showToast('Set your API endpoint in Settings first'); return; }
+        var effectiveKey = settings.apiKeys[settings.provider] || settings.apiKey;
+        if (!effectiveKey) { showToast('Set your API key in Settings first'); return; }
+
+        var chat = getActiveChat();
+        if (!chat) { chat = createChat({ asIncognito: incognito }); }
+
+        var payload = null;
+        var userContent = text;
+        var displayContent = text;
+        if (!opts.skipUserPush) {
+          payload = buildUserMessagePayload(text, pendingFiles);
+          userContent = payload.userContent;
+          displayContent = payload.displayContent;
+          chat.messages.push({ role: 'user', content: displayContent, _apiContent: userContent });
+          updateChatTitle(chat, text);
+          if (!chat.incognito) persistChats();
+        }
 
         composerInput.value = '';
         clearPendingFiles();
@@ -5771,7 +5804,9 @@
         if (messagesEl.querySelector('.empty-state')) { messagesEl.innerHTML = ''; }
         if (composerShell.parentElement !== composerArea) { composerArea.appendChild(composerShell); composerNote.style.display = ''; }
 
-        messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent, _rawContent: userContent }, false, chat.messages.length - 1));
+        if (!opts.skipUserPush) {
+          messagesEl.appendChild(buildMessageEl({ role: 'user', content: displayContent, _rawContent: userContent }, false, chat.messages.length - 1));
+        }
 
         var assistantMsg = { role: 'assistant', content: '', thinking: '', thinkingComplete: false, _initialLabel: initialLabel };
         chat.messages.push(assistantMsg);
@@ -5784,16 +5819,17 @@
         if (chat.id === activeChatId) setSendStop(true);
         var isActive = function() { return chat.id === activeChatId; };
 
-        var history = chat.messages
-          .filter(function(m) { return m.role === 'user' || (m.role === 'assistant' && m.content); })
-          .slice(0, -1)
-          .map(function(m) { return { role: m.role, content: m._apiContent || m.content }; });
+        var historyArr = chat.messages.filter(function(m) { return m.role === 'user' || (m.role === 'assistant' && m.content); });
+        if (!opts.skipUserPush) historyArr = historyArr.slice(0, -1);
+        var history = historyArr.map(function(m) { return { role: m.role, content: m._apiContent || m.content }; });
 
-        var currentMsg = { role: 'user', content: userContent };
-        if (!history.length || history[history.length - 1].role !== 'user') {
-          history.push(currentMsg);
-        } else {
-          history[history.length - 1] = currentMsg;
+        if (!opts.skipUserPush) {
+          var currentMsg = { role: 'user', content: userContent };
+          if (!history.length || history[history.length - 1].role !== 'user') {
+            history.push(currentMsg);
+          } else {
+            history[history.length - 1] = currentMsg;
+          }
         }
 
         var actualModel = settings.model === '__custom__' ? settings.customModelId : settings.model;

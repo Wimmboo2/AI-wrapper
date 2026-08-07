@@ -2766,6 +2766,21 @@
       opacity: 1;
     }
 
+    .effort-menu-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 110;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    .effort-menu-backdrop.visible {
+      display: block;
+      opacity: 1;
+    }
+
     @media (max-width: 768px) {
       /* Model picker dropdown: mobile bottom sheet */
       .model-picker-dropdown {
@@ -2789,6 +2804,32 @@
       @keyframes slideUpSheet {
         from { transform: translateY(100%); }
         to { transform: translateY(0); }
+      }
+
+      /* Effort menu: mobile bottom sheet (mirrors model picker sheet) */
+      .effort-menu {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: auto;
+        width: 100vw;
+        min-width: 0;
+        max-width: none;
+        max-height: 70vh;
+        border-radius: 20px 20px 0 0;
+        border: 1px solid var(--border);
+        border-bottom: none;
+        background: var(--bg-elevated);
+        box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.55);
+        z-index: 120;
+        padding: 12px;
+        padding-bottom: max(12px, env(safe-area-inset-bottom));
+        animation: slideUpSheet 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .effort-menu .effort-tiers {
+        max-height: calc(70vh - 150px);
+        overflow-y: auto;
       }
 
       .model-picker-list {
@@ -2910,6 +2951,7 @@
 
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
     <div class="model-picker-backdrop" id="modelPickerBackdrop"></div>
+    <div class="effort-menu-backdrop" id="effortMenuBackdrop"></div>
 
     <main class="main">
       <div class="topbar">
@@ -3816,6 +3858,7 @@
       function renderEffortMenuTiers(wrap) {
         if (!wrap) return;
         var container = wrap.querySelector('.effort-tiers');
+        if (!container && wrap._effortMenuPortal) container = wrap._effortMenuPortal.querySelector('.effort-tiers');
         if (!container) return;
         container.innerHTML = '';
         var tiers = getEffortTiers();
@@ -3849,22 +3892,74 @@
         if (composerToggle) composerToggle.checked = !!settings.thinking;
       }
 
+      function positionEffortMenu(menu, trigger) {
+        var r = trigger.getBoundingClientRect();
+        var menuW = menu.offsetWidth || 280;
+        var menuH = menu.offsetHeight || 277;
+        var left = Math.min(Math.max(r.left, 8), window.innerWidth - menuW - 8);
+        menu.style.position = 'fixed';
+        menu.style.left = left + 'px';
+        menu.style.right = 'auto';
+        if (window.innerHeight - r.bottom >= r.top) {
+          menu.style.top = (r.bottom + 6) + 'px';
+          menu.style.bottom = 'auto';
+        } else {
+          menu.style.top = 'auto';
+          menu.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+        }
+      }
+
+      function clearEffortMenuInline(menu) {
+        menu.style.position = '';
+        menu.style.top = '';
+        menu.style.bottom = '';
+        menu.style.left = '';
+        menu.style.right = '';
+      }
+
       function openEffortMenu(wrap) {
         if (!wrap) return;
         var trigger = wrap.querySelector('.effort-trigger, .composer-effort-trigger');
         var menu = wrap.querySelector('.effort-menu');
         if (!trigger || !menu) return;
         trigger.setAttribute('aria-expanded', 'true');
+        if (menu.parentElement !== document.body) {
+          wrap._effortMenuPortal = menu;
+          menu._effortWrap = wrap;
+          document.body.appendChild(menu);
+        }
         menu.classList.add('open');
+        if (window.innerWidth <= 768) {
+          clearEffortMenuInline(menu);
+        } else {
+          positionEffortMenu(menu, trigger);
+        }
+        var backdrop = $('effortMenuBackdrop');
+        if (backdrop && window.innerWidth <= 768) backdrop.classList.add('visible');
       }
 
       function closeEffortMenu(wrap) {
         if (!wrap) return;
+        var menu = wrap.querySelector('.effort-menu') || wrap._effortMenuPortal;
         var trigger = wrap.querySelector('.effort-trigger, .composer-effort-trigger');
-        var menu = wrap.querySelector('.effort-menu');
         if (!trigger || !menu) return;
         trigger.setAttribute('aria-expanded', 'false');
         menu.classList.remove('open');
+        if (wrap._effortMenuPortal === menu) {
+          clearEffortMenuInline(menu);
+          wrap.appendChild(menu);
+          delete wrap._effortMenuPortal;
+          delete menu._effortWrap;
+        }
+        var backdrop = $('effortMenuBackdrop');
+        if (backdrop) backdrop.classList.remove('visible');
+      }
+
+      function closeAllEffortMenus() {
+        document.querySelectorAll('.effort-menu.open').forEach(function(menu) {
+          var wrap = menu._effortWrap || menu.closest('.effort-control-wrap');
+          if (wrap) closeEffortMenu(wrap);
+        });
       }
 
       function getContextWindow() {
@@ -5907,7 +6002,7 @@
       document.addEventListener('click', function(e) {
         var menus = document.querySelectorAll('.effort-menu.open');
         for (var i = 0; i < menus.length; i++) {
-          var wrap = menus[i].closest('.effort-control-wrap');
+          var wrap = menus[i]._effortWrap || menus[i].closest('.effort-control-wrap');
           if (wrap && !e.target.closest('#' + wrap.id)) closeEffortMenu(wrap);
         }
       });
@@ -5920,7 +6015,7 @@
         if (e.key === 'Escape') {
           var menus = document.querySelectorAll('.effort-menu.open');
           for (var i = 0; i < menus.length; i++) {
-            var wrap = menus[i].closest('.effort-control-wrap');
+            var wrap = menus[i]._effortWrap || menus[i].closest('.effort-control-wrap');
             if (wrap) closeEffortMenu(wrap);
           }
           if (menus.length) e.preventDefault();
@@ -6481,6 +6576,7 @@
         }
       });
       $('modelPickerBackdrop').addEventListener('click', closeModelPicker);
+      $('effortMenuBackdrop').addEventListener('click', closeAllEffortMenus);
       $('composerAddModelSave').addEventListener('click', saveQuickCustomModel);
       $('composerAddModelCancel').addEventListener('click', hideComposerAddModel);
       $('composerAddModelCtx').addEventListener('keydown', function(e) { if (e.key === 'Enter') { saveQuickCustomModel(); } });

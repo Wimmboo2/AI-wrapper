@@ -1340,7 +1340,32 @@
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      padding: 2px 0 6px 0;
+      margin-top: 6px;
+    }
+
+    .edit-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      border: 1px solid var(--accent-soft);
+      background: var(--accent-soft);
+      border-radius: 10px;
+    }
+    .edit-banner-label {
+      font-size: 12.5px;
+      font-weight: 550;
+      color: var(--accent);
+    }
+    .edit-banner-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .edit-banner-actions .btn {
+      padding: 5px 11px;
+      font-size: 12px;
     }
 
     .active-mode-badge {
@@ -3050,6 +3075,13 @@
 
         <div class="composer-shell" id="composerShell">
           <div class="composer" id="composer">
+            <div class="edit-banner" id="editBanner" style="display:none;">
+              <span class="edit-banner-label">Editing message</span>
+              <div class="edit-banner-actions">
+                <button class="btn btn-secondary" id="editCancelBtn" type="button">Cancel</button>
+                <button class="btn btn-primary" id="editSaveBtn" type="button">Update</button>
+              </div>
+            </div>
             <div class="slash-menu" id="slashMenu"></div>
             <textarea
               class="composer-input"
@@ -4049,6 +4081,7 @@
       }
 
       function enterIncognito() {
+        cancelMessageEdit();
         incognito = true;
         if (!incognitoChat) createChat({ asIncognito: true });
         setIncognitoUI(true);
@@ -4059,6 +4092,7 @@
       }
 
       function exitIncognito() {
+        cancelMessageEdit();
         incognito = false;
         incognitoChat = null;
         setIncognitoUI(false);
@@ -4075,6 +4109,7 @@
       }
 
       function startNewChat() {
+        cancelMessageEdit();
         createChat({ asIncognito: incognito });
         renderAll();
         composerInput.focus();
@@ -4624,6 +4659,7 @@
           btn.addEventListener('click', function(e) {
             if (e.target.closest('.chat-item-del')) { e.stopPropagation(); deleteChat(chat.id); return; }
             if (e.target.closest('.chat-rename-input')) return;
+            cancelMessageEdit();
             activeChatId = chat.id;
             persistChats();
             renderAll();
@@ -4777,7 +4813,7 @@
           editBtn.title = 'Edit';
           editBtn.setAttribute('aria-label', 'Edit message');
           editBtn.innerHTML = ICONS.edit;
-          editBtn.addEventListener('click', function() { beginEditMessage(msgIndex, msg.role); });
+          editBtn.addEventListener('click', function() { if (msg.role === 'user') beginComposerEdit(msgIndex); else beginEditMessage(msgIndex, msg.role); });
           actions.appendChild(editBtn);
         }
         if (msg.role === 'assistant') {
@@ -4954,6 +4990,102 @@
         if (!chat.incognito) persistChats(chat);
         renderMessages();
         placeComposer();
+      }
+
+      var editingState = null;
+
+      function stripAttachmentMarker(text) {
+        return String(text || '').replace(/\n*\[Attached:[^\]]*\]\s*$/, '').trim();
+      }
+
+      function restorePendingFilesFromMsg(msg) {
+        var files = [];
+        var api = msg && msg._apiContent;
+        if (!Array.isArray(api)) return files;
+        var markerNames = [];
+        var markerMatch = String(msg.content || '').match(/\[Attached:\s*([^\]]*)\]/);
+        if (markerMatch) {
+          markerNames = markerMatch[1].split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+        }
+        var mi = 0;
+        for (var i = 0; i < api.length; i++) {
+          var part = api[i];
+          if (!part) continue;
+          if (part.type === 'image_url' && part.image_url && part.image_url.url) {
+            var url = part.image_url.url;
+            var mime = 'image/png';
+            var m = url.match(/^data:([^;,]+)[;,]/);
+            if (m) mime = m[1];
+            var imgName = markerNames[mi] || ('Image ' + (files.length + 1) + (mime === 'image/png' ? '.png' : '.jpg'));
+            files.push({ name: imgName, type: mime, data: url, size: 0 });
+            mi++;
+          } else if (part.type === 'text' && typeof part.text === 'string' && part.text.indexOf('[File: ') === 0) {
+            var body = part.text.slice(7);
+            var nl = body.indexOf('\n');
+            var fname = nl === -1 ? body : body.slice(0, nl);
+            var fdata = nl === -1 ? '' : body.slice(nl + 1);
+            var ext = (fname.split('.').pop() || '').toLowerCase();
+            var ftype = 'text/plain';
+            var extMap = { txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', py: 'text/x-python', js: 'text/javascript', ts: 'text/typescript', html: 'text/html', css: 'text/css' };
+            if (extMap[ext]) ftype = extMap[ext];
+            files.push({ name: fname, type: ftype, data: fdata, size: 0 });
+            mi++;
+          }
+        }
+        return files;
+      }
+
+      function renderEditBanner() {
+        var banner = $('editBanner');
+        if (!banner) return;
+        banner.style.display = editingState ? '' : 'none';
+      }
+
+      function beginComposerEdit(msgIndex) {
+        if (activeChatId in streamControllers) return;
+        var chat = getActiveChat();
+        if (!chat || !chat.messages[msgIndex]) return;
+        var msg = chat.messages[msgIndex];
+        if (msg.role !== 'user') return;
+        editingState = { chatId: chat.id, msgIndex: msgIndex };
+        composerInput.value = stripAttachmentMarker(msg.content || '');
+        clearPendingFiles();
+        var restored = restorePendingFilesFromMsg(msg);
+        for (var i = 0; i < restored.length; i++) {
+          pendingFiles.push(restored[i]);
+          addPendingFileTag(restored[i]);
+        }
+        renderEditBanner();
+        autoResize();
+        updateSendBtn();
+        composerInput.focus();
+        composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
+      }
+
+      function cancelMessageEdit() {
+        editingState = null;
+        renderEditBanner();
+        composerInput.value = '';
+        clearPendingFiles();
+        autoResize();
+        updateSendBtn();
+      }
+
+      function applyMessageEdit() {
+        if (!editingState) return;
+        if (activeChatId in streamControllers) return;
+        var text = composerInput.value.trim();
+        if (!text) return;
+        var chat = getActiveChat();
+        if (!chat || chat.id !== editingState.chatId) { cancelMessageEdit(); return; }
+        var msgIndex = editingState.msgIndex;
+        if (!chat.messages[msgIndex] || chat.messages[msgIndex].role !== 'user') { cancelMessageEdit(); return; }
+        chat.messages = chat.messages.slice(0, msgIndex);
+        chat.metrics = null;
+        if (!chat.incognito) persistChats();
+        editingState = null;
+        renderEditBanner();
+        sendMessage();
       }
 
       function beginEditMessage(msgIndex, role) {
@@ -6508,7 +6640,13 @@
         if (pastedCount) showToast(pastedCount + ' image' + (pastedCount !== 1 ? 's' : '') + ' pasted', 'info');
       });
 
-      sendBtn.addEventListener('click', function() { if (activeChatId in streamControllers) stopGeneration(); else sendMessage(); });
+      sendBtn.addEventListener('click', function() {
+        if (editingState) applyMessageEdit();
+        else if (activeChatId in streamControllers) stopGeneration();
+        else sendMessage();
+      });
+      $('editCancelBtn').addEventListener('click', cancelMessageEdit);
+      $('editSaveBtn').addEventListener('click', applyMessageEdit);
 
       composerInput.addEventListener('input', function() { autoResize(); updateSendBtn(); updateSlashMenu(); });
 
@@ -6534,13 +6672,18 @@
               return;
             }
           }
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            menu.classList.remove('visible');
-            return;
-          }
+        if (e.key === 'Escape') {
+          if (editingState) { e.preventDefault(); cancelMessageEdit(); return; }
+          e.preventDefault();
+          menu.classList.remove('visible');
+          return;
         }
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!(activeChatId in streamControllers)) sendMessage(); }
+        }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if (editingState) applyMessageEdit();
+          else if (!(activeChatId in streamControllers)) sendMessage();
+        }
       });
 
       $('modelPickerTrigger').addEventListener('click', function(e) {

@@ -4969,9 +4969,12 @@
 
           var regenMenu = document.createElement('div');
           regenMenu.className = 'regenerate-menu';
+          var usedWebSearch = msg._search && msg._search.sources && msg._search.sources.length;
           var regenItems = [
             { icon: ICONS.retry, label: 'Regenerate', opts: {} },
-            { icon: ICONS.search, label: 'With Web search', opts: { searchMode: 'on' } },
+            usedWebSearch
+              ? { icon: ICONS.search, label: 'Don\'t use web search', opts: { searchMode: 'off' } }
+              : { icon: ICONS.search, label: 'With Web search', opts: { searchMode: 'on' } },
             { icon: ICONS.longer, label: 'Longer', opts: { lengthHint: 'long' } },
             { icon: ICONS.shorter, label: 'Shorter', opts: { lengthHint: 'short' } },
           ];
@@ -5040,7 +5043,7 @@
         var branchArr = chat._branches[parentUserIdx];
         var isDup = branchArr.some(function(b) { return b.content === oldMsg.content; });
         if (!isDup) {
-          branchArr.push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete });
+          branchArr.push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete, _search: oldMsg._search });
         }
         chat._branchActive[parentUserIdx] = chat._branches[parentUserIdx].length;
         chat.messages = chat.messages.slice(0, parentUserIdx);
@@ -5070,9 +5073,9 @@
         if (active > branches.length) active = branches.length;
         var total = branches.length + 1;
         if (active < branches.length) {
-          branches[active] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete };
+          branches[active] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search };
         } else {
-          chat._liveReplies[parentUserIdx] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete };
+          chat._liveReplies[parentUserIdx] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search };
         }
         active = ((active + direction) % total + total) % total;
         if (active < branches.length) {
@@ -5080,12 +5083,14 @@
           current.content = loaded.content;
           current.thinking = loaded.thinking;
           current.thinkingComplete = loaded.thinkingComplete;
+          current._search = loaded._search;
         } else {
           var stashed = chat._liveReplies[parentUserIdx];
           if (stashed) {
             current.content = stashed.content;
             current.thinking = stashed.thinking;
             current.thinkingComplete = stashed.thinkingComplete;
+            current._search = stashed._search;
             delete chat._liveReplies[parentUserIdx];
           }
         }
@@ -5970,7 +5975,7 @@
           max_tokens: requestMaxTokens,
           stream: true,
           thinking: settings.thinking,
-          searchMode: searchActive ? 'on' : (settings.searchMode || 'auto'),
+          searchMode: opts.searchMode === 'off' ? 'off' : (searchActive ? 'on' : (settings.searchMode || 'auto')),
           effort: opts.effort || settings.effort || '',
         };
 

@@ -20,6 +20,7 @@ const ALLOWED_ORIGINS = [
 ];
 
 const MONTHLY_CAP = 900;
+const IP_CAP = 200;
 
 function corsHeaders() {
   return {
@@ -455,6 +456,28 @@ export default {
       return new Response(null, { headers: corsHeaders() });
     }
 
+    if (request.method === 'GET') {
+      const url = new URL(request.url);
+      if (url.pathname === '/usage') {
+        const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+        let globalUsed = 0;
+        let perIpUsed = 0;
+        try {
+          const g = await env.SEARCH_COUNTER.get(monthKey);
+          globalUsed = g ? parseInt(g, 10) : 0;
+          const p = await env.SEARCH_COUNTER.get(monthKey + ':' + ip);
+          perIpUsed = p ? parseInt(p, 10) : 0;
+        } catch (e) { console.error('KV USAGE READ FAILED:', e.message); }
+        return jsonResponse({
+          month: monthKey.slice(7),
+          perIp: { used: perIpUsed, limit: IP_CAP },
+          global: { used: globalUsed, limit: MONTHLY_CAP },
+        }, 200);
+      }
+      return jsonResponse({ error: { message: 'Method not allowed. Use POST.' } }, 405);
+    }
+
     if (request.method !== 'POST') {
       return jsonResponse({ error: { message: 'Method not allowed. Use POST.' } }, 405);
     }
@@ -492,14 +515,22 @@ export default {
         const originAllowed = !reqOrigin || ALLOWED_ORIGINS.some(function(o) { return reqOrigin.indexOf(o) === 0; });
         if (originAllowed) {
           const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
+          const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+          const ipKey = monthKey + ':' + ip;
           let counter = 0;
+          let ipCounter = 0;
           try {
             const val = await env.SEARCH_COUNTER.get(monthKey);
             counter = val ? parseInt(val, 10) : 0;
+            const ipVal = await env.SEARCH_COUNTER.get(ipKey);
+            ipCounter = ipVal ? parseInt(ipVal, 10) : 0;
           } catch (e) { console.error('KV READ FAILED:', e.message); }
           if (counter >= MONTHLY_CAP) {
             console.error('TAVILY CAP HIT:', monthKey, counter);
             searchEvent = { search: { error: 'Monthly search cap reached (' + MONTHLY_CAP + ').' } };
+          } else if (ipCounter >= IP_CAP) {
+            console.error('TAVILY IP CAP HIT:', ipKey, ipCounter);
+            searchEvent = { search: { error: 'Monthly search limit reached (' + IP_CAP + ' per IP).' } };
           } else {
             const queries = buildSearchQueries(lastUserText);
             if (queries.length) {
@@ -530,7 +561,10 @@ export default {
               }
               ctx.waitUntil(
                 (async function() {
-                  try { await env.SEARCH_COUNTER.put(monthKey, String(counter + queries.length), { expirationTtl: 3456000 }); }
+                  try {
+                    await env.SEARCH_COUNTER.put(monthKey, String(counter + queries.length), { expirationTtl: 3456000 });
+                    await env.SEARCH_COUNTER.put(ipKey, String(ipCounter + queries.length), { expirationTtl: 3456000 });
+                  }
                   catch (e) { console.error('KV WRITE FAILED:', e.message); }
                 })()
               );

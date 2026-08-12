@@ -2327,6 +2327,31 @@
       line-height: 1.45;
     }
 
+    .search-usage-bar {
+      flex: 1;
+      min-width: 0;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .search-usage-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.25s ease;
+    }
+
+    .search-usage-num {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
     .setting-slider {
       -webkit-appearance: none;
       appearance: none;
@@ -3348,6 +3373,15 @@
             <button type="button" class="segmented-btn" data-mode="auto">Auto</button>
             <button type="button" class="segmented-btn" data-mode="on">On</button>
             <button type="button" class="segmented-btn" data-mode="off">Off</button>
+          </div>
+        </div>
+
+        <div class="setting-group" id="searchUsageGroup" style="display:none;">
+          <div class="setting-label">Web search usage</div>
+          <p class="setting-desc">Tavily searches this month. Resets monthly.</p>
+          <div class="toggle-row">
+            <div class="search-usage-bar"><div class="search-usage-fill" id="searchUsageFill"></div></div>
+            <span class="search-usage-num" id="searchUsageNum"></span>
           </div>
         </div>
       </div>
@@ -5715,8 +5749,33 @@
         }
       }
 
+      function refreshSearchUsage() {
+        var group = $('searchUsageGroup');
+        if (!group) return;
+        var endpoint = (settings.apiEndpoint || '').trim();
+        if (!endpoint) { group.style.display = 'none'; return; }
+        var base = endpoint.replace(/\/+$/, '');
+        fetch(base + '/usage').then(function(res) {
+          if (!res.ok) throw new Error('usage ' + res.status);
+          return res.json();
+        }).then(function(data) {
+          var p = data && data.perIp;
+          if (!p || typeof p.used !== 'number' || typeof p.limit !== 'number' || p.limit <= 0) {
+            group.style.display = 'none';
+            return;
+          }
+          var pct = Math.min(100, Math.round((p.used / p.limit) * 100));
+          $('searchUsageNum').textContent = p.used + ' / ' + p.limit + ' used';
+          $('searchUsageFill').style.width = pct + '%';
+          group.style.display = '';
+        }).catch(function() {
+          group.style.display = 'none';
+        });
+      }
+
       function openSettings() {
         syncSettingsUI();
+        refreshSearchUsage();
         settingsModal.classList.add('open');
       }
 

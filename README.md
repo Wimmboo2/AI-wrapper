@@ -101,7 +101,7 @@ The frontend is a single HTML file with vanilla JavaScript. No frameworks, no bu
 
 The Cloudflare Worker (`worker.js`) is the critical piece. Each AI provider speaks a different protocol — OpenAI uses `data: [DONE]` SSE, Anthropic uses typed events (`content_block_delta`, `message_delta`), Google uses its own SSE format with `candidates[].content.parts[]`. The Worker normalizes all three into a single NDJSON stream (`{"delta":"text"}\n`) so the frontend only has to parse one format. It also translates message schemas — OpenAI multipart `content` arrays into Anthropic image blocks, Google `inline_data` parts, etc.
 
-Web search works by intercepting the request in the Worker, calling the Tavily API with the last user message, injecting the results as a system-level prefix, and tracking monthly usage (capped at 900 searches) via Cloudflare KV. The xAI Grok provider uses native search parameters instead.
+Web search works by intercepting the request in the Worker, calling the Tavily API with the last user message, injecting the results as a system-level prefix, and tracking monthly usage via Cloudflare KV — capped at 200 searches/month per IP plus a 900/month global backstop. The xAI Grok provider uses native search parameters instead. A `GET /usage` route exposes the current counters so the settings UI can render a usage bar.
 
 ## What I figured out along the way
 
@@ -115,7 +115,7 @@ OpenAI, Anthropic, and Google each stream differently — SSE with `data:` prefi
 
 ### Web search reliability
 
-Tavily's API occasionally returns empty results, a non-200 status, or worse — times out after several seconds. The first fix just added error logging. Then I added an `ALLOWED_ORIGINS` check so only the production Worker URL can trigger search (preventing abuse of the Tavily key). Then a monthly cap via Cloudflare KV (900 searches/month, stored with a `YYYY-MM` key and 40-day TTL). The search results are injected as a system prefix with explicit instructions to the model: "Answer the question above using these search results. Do not mention the search." — without this, models would sometimes ignore the results and answer from training data. See `worker.js:396–472`.
+Tavily's API occasionally returns empty results, a non-200 status, or worse — times out after several seconds. The first fix just added error logging. Then I added an `ALLOWED_ORIGINS` check so only the production Worker URL can trigger search (preventing abuse of the Tavily key). Then a monthly cap via Cloudflare KV: 200 searches/month per IP (`tavily:YYYY-MM:<ip>`, IP taken from `CF-Connecting-IP`) plus a 900/month global backstop (`tavily:YYYY-MM`), both with a 40-day TTL, so one visitor can't burn the whole quota. A `GET /usage` route reads those counters so the settings modal can show a usage bar. The search results are injected as a system prefix with explicit instructions to the model: "Answer the question above using these search results. Do not mention the search." — without this, models would sometimes ignore the results and answer from training data. See `worker.js:396–472`.
 
 ### Touch scroll vs. auto-scroll on mobile
 

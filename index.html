@@ -3675,6 +3675,8 @@
           name: 'Custom',
           apiKeyPlaceholder: 'Enter API key...',
           models: [],
+          effort: ['low', 'medium', 'high', 'xhigh', 'max'],
+          effortDefault: 'medium',
         }
       };
 
@@ -3874,7 +3876,7 @@
 
       function getActiveModelConfig() {
         if (settings.model === '__custom__') {
-          return { id: settings.customModelId || '__custom__', name: 'Custom', ctx: settings.customModelCtx || 8192 };
+          return { id: settings.customModelId || '__custom__', name: 'Custom', ctx: settings.customModelCtx || 8192, effort: ['low', 'medium', 'high', 'xhigh', 'max'], effortDefault: 'medium' };
         }
         var models = getAvailableModels(settings.provider);
         for (var i = 0; i < models.length; i++) {
@@ -3883,7 +3885,7 @@
         var quick = (settings.quickCustomModels || []).filter(function(m) { return m.provider === settings.provider; });
         for (var q = 0; q < quick.length; q++) {
           if (quick[q].id === settings.model) {
-            return { id: quick[q].id, name: quick[q].name || quick[q].id, ctx: quick[q].ctx || 8192 };
+            return { id: quick[q].id, name: quick[q].name || quick[q].id, ctx: quick[q].ctx || 8192, effort: ['low', 'medium', 'high', 'xhigh', 'max'], effortDefault: 'medium' };
           }
         }
         return models.length ? models[0] : null;
@@ -3893,7 +3895,13 @@
 
       function getEffortTiers() {
         var m = getActiveModelConfig();
-        return m && Array.isArray(m.effort) && m.effort.length ? m.effort : null;
+        if (m && Array.isArray(m.effort) && m.effort.length) return m.effort;
+        var pCfg = getProviderConfig(settings.provider);
+        if (pCfg && Array.isArray(pCfg.effort) && pCfg.effort.length) return pCfg.effort;
+        if (settings.provider === 'custom') {
+          return ['low', 'medium', 'high', 'xhigh', 'max'];
+        }
+        return null;
       }
 
       function activeModelSupportsVision() {
@@ -3904,6 +3912,8 @@
       function getEffortDefault() {
         var m = getActiveModelConfig();
         if (m && m.effortDefault) return m.effortDefault;
+        var pCfg = getProviderConfig(settings.provider);
+        if (pCfg && pCfg.effortDefault) return pCfg.effortDefault;
         var tiers = getEffortTiers();
         return tiers ? tiers[tiers.length - 1] : null;
       }
@@ -3956,7 +3966,9 @@
         row.appendChild(check);
         row.addEventListener('click', function() {
           settings.effort = tier;
-          renderEffortMenuTiers(wrap);
+          saveSettings();
+          renderEffortControl();
+          updateComposerEffort();
           closeEffortMenu(wrap);
         });
         return row;

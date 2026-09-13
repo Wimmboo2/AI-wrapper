@@ -1298,6 +1298,63 @@
       color: var(--text-faint);
     }
 
+    /* Agent mode: tool call steps */
+    .tool-steps { margin: 0 0 12px; display: flex; flex-direction: column; gap: 8px; }
+    .tool-step-text { margin: 0 0 4px; }
+
+    .tool-step {
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      background: var(--bg-elevated, rgba(255,255,255,0.02));
+      overflow: hidden;
+    }
+    .tool-step-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-muted);
+      list-style: none;
+      user-select: none;
+    }
+    .tool-step-summary::-webkit-details-marker { display: none; }
+    .tool-step-summary:hover { color: var(--text-primary, var(--text-muted)); }
+    .tool-step-summary svg { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.75; }
+    .tool-step[open] .tool-step-summary { border-bottom: 1px solid var(--border-soft); }
+    .tool-step-failed .tool-step-summary { color: var(--text-faint); }
+    .tool-step-failed { border-color: rgba(239, 68, 68, 0.35); }
+
+    .tool-step-code,
+    .tool-step-out {
+      margin: 0;
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-x: auto;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .tool-step-code { color: var(--text-muted); }
+    .tool-step-out { color: var(--text-faint); border-top: 1px dashed var(--border-soft); }
+    .tool-step-out-label {
+      padding: 8px 12px 0;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+    }
+
+    #agentModeBtn.agent-active {
+      color: #34d399;
+      background: rgba(52, 211, 153, 0.12);
+    }
+    #agentModeBtn:disabled { opacity: 0.35; cursor: not-allowed; }
+
     .message-edit {
       width: 100%;
       border: 1px solid var(--border-soft);
@@ -3154,6 +3211,12 @@
                   </svg>
                 </button>
                 <input type="file" id="fileInput" accept="image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.pdf" style="display:none;" multiple />
+                <button class="composer-icon-btn" type="button" title="Agent mode — let the model run code in a sandbox" aria-label="Toggle agent mode" id="agentModeBtn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="4 17 10 11 4 5"/>
+                    <line x1="12" y1="19" x2="20" y2="19"/>
+                  </svg>
+                </button>
                 <div class="model-picker-wrap" id="modelPickerWrap">
                   <button class="model-picker-trigger" id="modelPickerTrigger" type="button" title="Quick model switch" aria-label="Switch model">
                     <span class="model-picker-trigger-label" id="modelPickerLabel">Model</span>
@@ -3304,6 +3367,23 @@
           <label class="setting-label" for="settingSystemPrompt">Custom Instructions</label>
           <p class="setting-desc">System prompt prepended to every message. Leave empty for none.</p>
           <textarea class="setting-input setting-input-mono" id="settingSystemPrompt" placeholder="You are a helpful assistant..." rows="3"></textarea>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="settingE2BKey">E2B API Key (agent mode)</label>
+          <p class="setting-desc">Enables agent mode, which lets the model run code in a sandboxed Linux VM. Your key, your account &mdash; stored in this browser and sent only to your own Worker. Sandboxes bill for idle time as well as execution, so they are killed as soon as a run ends.</p>
+          <div style="position:relative;">
+            <input type="password" class="setting-input setting-input-mono" id="settingE2BKey" placeholder="e2b_..." autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <div class="setting-label-row">
+            <label class="setting-label" for="settingAgentSteps">Agent step limit</label>
+            <span class="setting-value" id="agentStepsValue">8</span>
+          </div>
+          <p class="setting-desc">How many tool calls one reply may chain before the model is forced to answer. Each step re-sends the whole conversation, so higher costs more.</p>
+          <input type="range" class="setting-slider" id="settingAgentSteps" min="1" max="25" step="1" value="8" />
         </div>
 
         <div class="setting-group">
@@ -3707,6 +3787,9 @@
         systemPrompt: '',
         quickCustomModels: [],
         promptTemplates: DEFAULT_TEMPLATES,
+        e2bKey: '',
+        agentMaxSteps: 8,
+        agentSandboxTimeout: 120,
       };
 
       var PROMPTS = {
@@ -4113,6 +4196,7 @@
 
       function deleteChat(id) {
         if (streamControllers[id]) { streamControllers[id].abort(); delete streamControllers[id]; }
+        killSandbox(id);
         chats = chats.filter(function(c) { return c.id !== id; });
         if (!incognito && activeChatId === id) {
           activeChatId = chats.length ? chats[0].id : null;
@@ -4677,7 +4761,7 @@
         renderChatList();
         renderMessages();
         placeComposer();
-
+        syncAgentButton();
       }
 
       function renderChatList() {
@@ -5053,9 +5137,9 @@
           delete chat._liveReplies[parentUserIdx];
         }
         var branchArr = chat._branches[parentUserIdx];
-        var isDup = branchArr.some(function(b) { return b.content === oldMsg.content; });
+        var isDup = branchArr.some(function(b) { return b.content === oldMsg.content && !b._steps && !oldMsg._steps; });
         if (!isDup) {
-          branchArr.push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete, _search: oldMsg._search });
+          branchArr.push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete, _search: oldMsg._search, _steps: oldMsg._steps });
         }
         chat._branchActive[parentUserIdx] = chat._branches[parentUserIdx].length;
         chat.messages = chat.messages.slice(0, parentUserIdx);
@@ -5085,9 +5169,9 @@
         if (active > branches.length) active = branches.length;
         var total = branches.length + 1;
         if (active < branches.length) {
-          branches[active] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search };
+          branches[active] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search, _steps: current._steps };
         } else {
-          chat._liveReplies[parentUserIdx] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search };
+          chat._liveReplies[parentUserIdx] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search, _steps: current._steps };
         }
         active = ((active + direction) % total + total) % total;
         if (active < branches.length) {
@@ -5096,6 +5180,7 @@
           current.thinking = loaded.thinking;
           current.thinkingComplete = loaded.thinkingComplete;
           current._search = loaded._search;
+          current._steps = loaded._steps;
         } else {
           var stashed = chat._liveReplies[parentUserIdx];
           if (stashed) {
@@ -5103,6 +5188,7 @@
             current.thinking = stashed.thinking;
             current.thinkingComplete = stashed.thinkingComplete;
             current._search = stashed._search;
+            current._steps = stashed._steps;
             delete chat._liveReplies[parentUserIdx];
           }
         }
@@ -5287,6 +5373,58 @@
         });
       }
 
+      // Tool calls render as collapsed disclosures between the thinking block and
+      // the answer, reusing the thinking-details styling rather than inventing a
+      // second visual language for "the model did something".
+      function buildToolSteps(steps) {
+        var wrap = document.createElement('div');
+        wrap.className = 'tool-steps';
+        steps.forEach(function(step) {
+          if (step.text) {
+            var pre = document.createElement('div');
+            pre.className = 'message-content tool-step-text';
+            pre.innerHTML = renderMarkdown(step.text);
+            wrap.appendChild(pre);
+          }
+          step.calls.forEach(function(call, idx) {
+            var result = step.results[idx];
+            var failed = result && /^Error:/.test(result.content);
+            var det = document.createElement('details');
+            det.className = 'tool-step' + (failed ? ' tool-step-failed' : '');
+            var sum = document.createElement('summary');
+            sum.className = 'tool-step-summary';
+            var label = call.name === 'run_python' ? 'Ran Python'
+              : call.name === 'run_bash' ? 'Ran shell'
+              : call.name === 'write_file' ? 'Wrote file'
+              : call.name === 'read_file' ? 'Read file' : call.name;
+            sum.innerHTML = ICONS.code + ' <span>' + escapeHtml(label) + '</span>';
+            det.appendChild(sum);
+
+            var argText = call.args && (call.args.code || call.args.script || call.args.content || call.args.path);
+            if (argText) {
+              var codeWrap = document.createElement('pre');
+              codeWrap.className = 'tool-step-code';
+              var codeEl = document.createElement('code');
+              codeEl.textContent = String(argText);
+              codeWrap.appendChild(codeEl);
+              det.appendChild(codeWrap);
+            }
+            if (result && result.content) {
+              var outLabel = document.createElement('div');
+              outLabel.className = 'tool-step-out-label';
+              outLabel.textContent = 'Output';
+              det.appendChild(outLabel);
+              var out = document.createElement('pre');
+              out.className = 'tool-step-out';
+              out.textContent = result.content;
+              det.appendChild(out);
+            }
+            wrap.appendChild(det);
+          });
+        });
+        return wrap;
+      }
+
       function buildMessageEl(msg, streaming, msgIndex) {
         var el = document.createElement('div');
         el.className = 'message ' + msg.role;
@@ -5304,6 +5442,9 @@
         if (msg.role === 'assistant' && streaming && !msg.content) { body.appendChild(buildThinkingLive(msg._initialLabel || 'Thinking.')); }
         if (hasThinkingText && msg.thinkingComplete !== false) { body.appendChild(buildThinkingDetails(msg.thinking, false)); }
         else if (hasThinkingText && msg.thinking) { body.appendChild(buildThinkingDetails(msg.thinking, true)); }
+        if (msg.role === 'assistant' && msg._steps && msg._steps.length) {
+          body.appendChild(buildToolSteps(msg._steps));
+        }
         var content = document.createElement('div');
         content.className = 'message-content' + (streaming && msg.content ? ' streaming-cursor' : '');
         if (msg.role === 'user') {
@@ -5341,7 +5482,7 @@
             body.appendChild(searchNote);
           }
         }
-        if (msg.content && !(streaming && msg.role === 'assistant')) { body.appendChild(buildMessageActions(msg, msgIndex)); }
+        if ((msg.content || (msg._steps && msg._steps.length)) && !(streaming && msg.role === 'assistant')) { body.appendChild(buildMessageActions(msg, msgIndex)); }
         el.appendChild(avatar);
         el.appendChild(body);
         return el;
@@ -5560,7 +5701,20 @@
             if (label) label.textContent = 'Thought process';
           }
         }
-        var content = body.querySelector('.message-content');
+        var stepsEl = body.querySelector('.tool-steps');
+        if (msg._steps && msg._steps.length) {
+          var rebuilt = buildToolSteps(msg._steps);
+          if (stepsEl) body.replaceChild(rebuilt, stepsEl);
+          else {
+            var stepAnchor = body.querySelector('.thinking-details') || body.querySelector('.thinking-row') || body.querySelector('.message-role');
+            if (stepAnchor && stepAnchor.nextSibling) body.insertBefore(rebuilt, stepAnchor.nextSibling);
+            else body.appendChild(rebuilt);
+          }
+        }
+        // Scoped to direct children: tool-step text also carries .message-content
+        // for markdown styling and sits earlier in the DOM, so an unscoped lookup
+        // would stream the answer into the wrong element.
+        var content = body.querySelector(':scope > .message-content');
         if (!content) { content = document.createElement('div'); content.className = 'message-content'; body.appendChild(content); }
         if (msg.content) {
           content.style.display = '';
@@ -5731,6 +5885,10 @@
         $('settingThinking').checked = settings.thinking;
         $('settingCustomURL').value = settings.customBaseURL || '';
         $('settingSystemPrompt').value = settings.systemPrompt || '';
+        $('settingE2BKey').value = settings.e2bKey || '';
+        $('settingAgentSteps').value = settings.agentMaxSteps;
+        $('agentStepsValue').textContent = settings.agentMaxSteps;
+        updateSliderFill($('settingAgentSteps'));
         renderCustomModels();
         toggleCustomSection();
         renderEffortControl();
@@ -5808,6 +5966,8 @@
         settings.thinking = $('settingThinking').checked;
         settings.customBaseURL = $('settingCustomURL').value.trim();
         settings.systemPrompt = $('settingSystemPrompt').value.trim();
+        settings.e2bKey = $('settingE2BKey').value.trim();
+        settings.agentMaxSteps = Math.max(1, Math.min(Number($('settingAgentSteps').value) || 8, 25));
 
         // Validate active model
         var avail = getAvailableModels(settings.provider);
@@ -5834,6 +5994,7 @@
         updateComposerNote();
         populateComposerModelSelect();
         updateComposerEffort();
+        syncAgentButton();
         showToast('Settings saved', 'info');
       }
 
@@ -5847,6 +6008,226 @@
         long: 'The user requested a longer, more detailed response. Expand your answer thoroughly — cover all relevant aspects, include examples and reasoning, and do not truncate or summarize.',
         short: 'The user requested a concise response. Keep your answer short and to the point — brief, direct, and without unnecessary detail.',
       };
+
+      // ---------------------------------------------------------------
+      // Agent mode
+      //
+      // The loop runs here in the browser rather than in the Worker: the page
+      // already holds the provider key and drives streaming, so the Worker stays
+      // a stateless proxy holding no secrets, and long runs never hit a Worker
+      // CPU limit. The tradeoff is that closing the tab ends the run — the
+      // sandbox's own create-time timeout is the backstop for that.
+      // ---------------------------------------------------------------
+
+      var AGENT_TOOLS = [
+        {
+          name: 'run_python',
+          description: 'Execute Python 3 code in a sandboxed Linux VM and return its stdout and stderr. Use this for calculations, data processing, and anything you would otherwise have to reason about step by step. Packages can be installed with run_bash and pip. State does NOT persist between calls, so each snippet must be self-contained.',
+          parameters: {
+            type: 'object',
+            properties: { code: { type: 'string', description: 'The Python source to run. Print anything you want to see.' } },
+            required: ['code'],
+          },
+        },
+        {
+          name: 'run_bash',
+          description: 'Execute a bash script in the same sandboxed Linux VM and return its stdout and stderr. Use for installing packages, inspecting the filesystem, and running command line tools.',
+          parameters: {
+            type: 'object',
+            properties: { script: { type: 'string', description: 'The bash script to run.' } },
+            required: ['script'],
+          },
+        },
+        {
+          name: 'write_file',
+          description: 'Write a text file inside the sandbox. Files persist for the lifetime of the sandbox, so this is how you carry state between run_python calls.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Absolute path, e.g. /home/user/data.csv' },
+              content: { type: 'string', description: 'The full file contents.' },
+            },
+            required: ['path', 'content'],
+          },
+        },
+        {
+          name: 'read_file',
+          description: 'Read a text file back from the sandbox.',
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string', description: 'Absolute path to read.' } },
+            required: ['path'],
+          },
+        },
+      ];
+
+      var AGENT_SYSTEM_PROMPT = 'You have access to a sandboxed Linux VM with Python 3 and bash. Prefer running code over reasoning about what code would produce — actually execute it and report what really happened. Each run_python call starts a fresh process, so write self-contained snippets and use files to carry state between them. Print the results you want to keep. When you have the answer, state it plainly rather than only showing the code.';
+
+      // One sandbox per chat, created lazily and never persisted to IndexedDB —
+      // a sandbox id from a previous session is dead and would only 404.
+      var sandboxes = {};
+      var keepaliveTimers = {};
+
+      function agentEndpoint(path) {
+        return (settings.apiEndpoint || '').replace(/\/+$/, '') + path;
+      }
+
+      function agentAvailable() {
+        var cfg = getActiveModelConfig();
+        return !!(settings.e2bKey && settings.apiEndpoint && cfg && cfg.tools !== false);
+      }
+
+      async function ensureSandbox(chatId, signal) {
+        if (sandboxes[chatId]) return sandboxes[chatId];
+        var res = await fetch(agentEndpoint('/sandbox/create'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ e2bKey: settings.e2bKey, timeoutSec: settings.agentSandboxTimeout }),
+          signal: signal,
+        });
+        var data = await res.json();
+        if (!res.ok || data.error) throw new Error((data.error && data.error.message) || 'Could not start sandbox');
+        sandboxes[chatId] = data;
+        startKeepalive(chatId);
+        return data;
+      }
+
+      // Only ping while a run is actually in flight. If the user walks away the
+      // interval stops and the sandbox expires on its own rather than billing on.
+      function startKeepalive(chatId) {
+        stopKeepalive(chatId);
+        keepaliveTimers[chatId] = setInterval(function() {
+          var sb = sandboxes[chatId];
+          if (!sb) { stopKeepalive(chatId); return; }
+          fetch(agentEndpoint('/sandbox/keepalive'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ e2bKey: settings.e2bKey, sandboxId: sb.sandboxId, timeoutSec: settings.agentSandboxTimeout }),
+          }).catch(function() {});
+        }, Math.max(30000, (settings.agentSandboxTimeout * 1000) / 3));
+      }
+
+      function stopKeepalive(chatId) {
+        if (keepaliveTimers[chatId]) { clearInterval(keepaliveTimers[chatId]); delete keepaliveTimers[chatId]; }
+      }
+
+      function killSandbox(chatId, useBeacon) {
+        var sb = sandboxes[chatId];
+        if (!sb) return;
+        delete sandboxes[chatId];
+        stopKeepalive(chatId);
+        var payload = JSON.stringify({ e2bKey: settings.e2bKey, sandboxId: sb.sandboxId, domain: sb.domain });
+        if (useBeacon && navigator.sendBeacon) {
+          try {
+            navigator.sendBeacon(agentEndpoint('/sandbox/kill'), new Blob([payload], { type: 'application/json' }));
+            return;
+          } catch (e) { /* fall through to fetch */ }
+        }
+        fetch(agentEndpoint('/sandbox/kill'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true,
+        }).catch(function() {});
+      }
+
+      function sandboxExec(sb, code, language, signal) {
+        return fetch(agentEndpoint('/sandbox/exec'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            e2bKey: settings.e2bKey, sandboxId: sb.sandboxId, domain: sb.domain, token: sb.token,
+            code: code, language: language,
+          }),
+          signal: signal,
+        }).then(function(r) { return r.json(); });
+      }
+
+      function formatToolResult(data) {
+        if (data.error) return 'Error: ' + (data.error.message || 'sandbox call failed');
+        var out = '';
+        if (data.stdout) out += data.stdout;
+        if (data.stderr) out += (out ? '\n' : '') + '[stderr]\n' + data.stderr;
+        if (data.exit_code) out += (out ? '\n' : '') + '[exit code ' + data.exit_code + ']';
+        if (data.timed_out) out += (out ? '\n' : '') + '[timed out]';
+        if (data.truncated) out += '\n[output truncated]';
+        return out || '(no output)';
+      }
+
+      async function executeToolCall(chatId, call, signal) {
+        var args = call.args || {};
+        try {
+          var sb = await ensureSandbox(chatId, signal);
+          var data;
+          if (call.name === 'run_python') {
+            data = await sandboxExec(sb, String(args.code || ''), 'python', signal);
+          } else if (call.name === 'run_bash') {
+            data = await sandboxExec(sb, String(args.script || ''), 'bash', signal);
+          } else if (call.name === 'write_file') {
+            // Routed through python so the path is never interpolated into a shell
+            // command; the worker already base64-wraps the whole snippet.
+            var wpath = JSON.stringify(String(args.path || ''));
+            var wbody = JSON.stringify(String(args.content || ''));
+            data = await sandboxExec(sb,
+              'import os,pathlib\np=' + wpath + '\nos.makedirs(os.path.dirname(p) or ".",exist_ok=True)\n' +
+              'pathlib.Path(p).write_text(' + wbody + ')\nprint("wrote",p,len(' + wbody + '),"bytes")', 'python', signal);
+          } else if (call.name === 'read_file') {
+            var rpath = JSON.stringify(String(args.path || ''));
+            data = await sandboxExec(sb, 'import pathlib\nprint(pathlib.Path(' + rpath + ').read_text())', 'python', signal);
+          } else {
+            return 'Error: unknown tool "' + call.name + '"';
+          }
+          return formatToolResult(data);
+        } catch (e) {
+          if (e.name === 'AbortError') return 'Error: cancelled by user';
+          return 'Error: ' + (e.message || 'tool execution failed');
+        }
+      }
+
+      function safeParseToolArgs(raw) {
+        try {
+          var v = JSON.parse(raw || '{}');
+          return v && typeof v === 'object' ? v : {};
+        } catch (_) { return {}; }
+      }
+
+      // content may be null on an assistant tool-call turn or an array on a
+      // multimodal one, so length can never be read off it directly.
+      function approxContentLength(content) {
+        if (typeof content === 'string') return content.length;
+        if (Array.isArray(content)) {
+          return content.reduce(function(sum, part) {
+            if (!part) return sum;
+            if (typeof part.text === 'string') return sum + part.text.length;
+            return sum + 24;
+          }, 0);
+        }
+        return 0;
+      }
+
+      // One agent step becomes the assistant tool-call turn plus its results.
+      function stepToApiMessages(step) {
+        var out = [{
+          role: 'assistant',
+          content: step.text || null,
+          tool_calls: step.calls.map(function(t) {
+            return { id: t.id, type: 'function', function: { name: t.name, arguments: t.argsText || '{}' } };
+          }),
+        }];
+        step.results.forEach(function(r) {
+          out.push({ role: 'tool', tool_call_id: r.id, name: r.name, content: r.content });
+        });
+        return out;
+      }
+
+      // Serializes one stored message into wire shape. An assistant message that
+      // used tools expands into several turns, so this always returns an array.
+      function toApiMessages(m) {
+        if (m.role === 'assistant' && m._steps && m._steps.length) {
+          var out = [];
+          m._steps.forEach(function(step) { out = out.concat(stepToApiMessages(step)); });
+          if (m.content) out.push({ role: 'assistant', content: m.content });
+          return out;
+        }
+        return [{ role: m.role, content: m._apiContent || m.content }];
+      }
 
       function buildUserMessagePayload(text, files, skipPrefix) {
         var userContent = text;
@@ -5949,9 +6330,17 @@
         if (chat.id === activeChatId) setSendStop(true);
         var isActive = function() { return chat.id === activeChatId; };
 
-        var historyArr = chat.messages.filter(function(m) { return m.role === 'user' || (m.role === 'assistant' && m.content); });
+        // An assistant turn that only called tools has no text content. Dropping it
+        // here would orphan the tool results that follow, so it must be kept.
+        // An assistant turn that only called tools has no text content. Dropping
+        // it would orphan its tool results, which every provider rejects.
+        var historyArr = chat.messages.filter(function(m) {
+          if (m.role === 'user') return true;
+          return m.role === 'assistant' && (m.content || (m._steps && m._steps.length));
+        });
         if (!opts.skipUserPush) historyArr = historyArr.slice(0, -1);
-        var history = historyArr.map(function(m) { return { role: m.role, content: m._apiContent || m.content }; });
+        var history = [];
+        historyArr.forEach(function(m) { history = history.concat(toApiMessages(m)); });
 
         if (!opts.skipUserPush) {
           var currentMsg = { role: 'user', content: userContent };
@@ -5991,6 +6380,12 @@
           effort: opts.effort || settings.effort || '',
         };
 
+        var agentActive = !!chat._agentMode && agentAvailable();
+        if (agentActive) {
+          requestBody.tools = AGENT_TOOLS;
+          requestBody.messages = [{ role: 'system', content: AGENT_SYSTEM_PROMPT }].concat(requestBody.messages);
+        }
+
         if (settings.provider === 'custom') {
           requestBody.baseURL = settings.customBaseURL || '';
         }
@@ -6010,14 +6405,20 @@
 
         var endpoint = settings.apiEndpoint.replace(/\/+$/, '');
 
-        try {
+        // Runs a single request/response turn. Returns the tool calls the model
+        // asked for, if any. Deliberately does NOT call finishStreamingUI: that
+        // strips the live thinking row, which must survive between iterations.
+        async function runOneTurn(reqBody) {
+          var pendingTools = {};
+          var toolOrder = [];
+
           var res = await fetch(endpoint + '/api/chat', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Accept: 'application/x-ndjson, application/json, text/event-stream',
             },
-            body: JSON.stringify(requestBody),
+            body: JSON.stringify(reqBody),
             signal: streamControllers[chat.id] ? streamControllers[chat.id].signal : undefined,
           });
 
@@ -6073,6 +6474,22 @@
                 if (isActive()) updateLastAssistantMessage(assistantMsg);
               }
 
+              // tool_start is an upsert: providers may resolve id/name on a later
+              // chunk than the one that opened the slot.
+              if (event.tool_start) {
+                var si = event.tool_start.i;
+                if (!pendingTools[si]) { pendingTools[si] = { id: '', name: '', argsText: '' }; toolOrder.push(si); }
+                if (event.tool_start.id) pendingTools[si].id = event.tool_start.id;
+                if (event.tool_start.name) pendingTools[si].name = event.tool_start.name;
+                if (isActive()) {
+                  var startLabel = messagesEl.querySelector('.thinking-label');
+                  if (startLabel) startLabel.textContent = 'Preparing ' + (pendingTools[si].name || 'tool') + '…';
+                }
+              }
+              if (event.tool_args && pendingTools[event.tool_args.i]) {
+                pendingTools[event.tool_args.i].argsText += event.tool_args.d || '';
+              }
+
               if (event.usage) {
                 localMetrics.input_tokens = event.usage.prompt_tokens != null ? event.usage.prompt_tokens : event.usage.input_tokens != null ? event.usage.input_tokens : localMetrics.input_tokens;
                 localMetrics.output_tokens = event.usage.completion_tokens != null ? event.usage.completion_tokens : event.usage.output_tokens != null ? event.usage.output_tokens : localMetrics.output_tokens;
@@ -6093,7 +6510,7 @@
                   var liveLabel = messagesEl.querySelector('.thinking-label');
                   if (liveLabel) {
                     if (event.search.sources && event.search.sources.length) {
-                      liveLabel.textContent = 'Searching web \u00b7 ' + event.search.sources.length + ' source' + (event.search.sources.length !== 1 ? 's' : '');
+                      liveLabel.textContent = 'Searching web · ' + event.search.sources.length + ' source' + (event.search.sources.length !== 1 ? 's' : '');
                     } else if (event.search.error) {
                       liveLabel.textContent = 'Web search unavailable';
                     }
@@ -6103,6 +6520,62 @@
 
               if (event.error) { throw new Error(event.error.message || event.error || 'Stream error'); }
             }
+          }
+
+          return toolOrder.map(function(k) {
+            var t = pendingTools[k];
+            return { id: t.id || ('call_' + k), name: t.name, argsText: t.argsText || '{}', args: safeParseToolArgs(t.argsText) };
+          }).filter(function(t) { return !!t.name; });
+        }
+
+        try {
+          var maxSteps = Math.max(1, Math.min(parseInt(settings.agentMaxSteps, 10) || 8, 25));
+          var step = 0;
+
+          while (true) {
+            var turnTextStart = assistantMsg.content.length;
+            var calls = await runOneTurn(requestBody);
+            if (!calls.length) break;
+
+            var turnText = assistantMsg.content.slice(turnTextStart);
+
+            // Stopping here would leave an assistant tool-call turn with no
+            // matching result, which every provider rejects on the next message.
+            // Instead answer the cap as a tool result and force a final text turn.
+            var capped = step >= maxSteps;
+            var results = [];
+            if (capped) {
+              for (var ci = 0; ci < calls.length; ci++) {
+                results.push({ id: calls[ci].id, name: calls[ci].name, content: 'Error: maximum agent steps (' + maxSteps + ') reached. Answer with what you have.' });
+              }
+            } else {
+              for (var cj = 0; cj < calls.length; cj++) {
+                var call = calls[cj];
+                if (isActive()) {
+                  var runLabel = messagesEl.querySelector('.thinking-label');
+                  if (runLabel) runLabel.textContent = 'Running ' + call.name + '…';
+                }
+                var out = await executeToolCall(chat.id, call, streamControllers[chat.id] ? streamControllers[chat.id].signal : undefined);
+                results.push({ id: call.id, name: call.name, content: out });
+                if (streamControllers[chat.id] && streamControllers[chat.id].signal.aborted) break;
+              }
+            }
+
+            if (!assistantMsg._steps) assistantMsg._steps = [];
+            assistantMsg._steps.push({ text: turnText, calls: calls, results: results });
+            assistantMsg.content = assistantMsg.content.slice(0, turnTextStart);
+            if (isActive()) updateLastAssistantMessage(assistantMsg);
+            if (!chat.incognito) persistChats(chat);
+
+            // Abort is checked between iterations too, or Stop would only end the
+            // current request and the loop would immediately start another.
+            if (streamControllers[chat.id] && streamControllers[chat.id].signal.aborted) {
+              throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+            }
+
+            requestBody.messages = requestBody.messages.concat(stepToApiMessages(assistantMsg._steps[assistantMsg._steps.length - 1]));
+            if (capped) { delete requestBody.tools; }
+            step++;
           }
 
           var streamEnd = performance.now();
@@ -6116,7 +6589,9 @@
             localMetrics.output_tokens = Math.max(1, Math.round(assistantMsg.content.length / 3.5));
           }
           if (localMetrics.input_tokens == null) {
-            var promptChars = requestBody.messages.reduce(function(s, m) { return s + m.content.length; }, 0);
+            // Content is null on an assistant tool-call turn and an array on a
+            // multimodal one, so this cannot assume a string.
+            var promptChars = requestBody.messages.reduce(function(sum, m) { return sum + approxContentLength(m.content); }, 0);
             localMetrics.input_tokens = Math.max(1, Math.round(promptChars / 3.5));
           }
           if (localMetrics.output_tokens && localMetrics.ttft_ms != null) {
@@ -6129,7 +6604,7 @@
           }
 
           assistantMsg.thinkingComplete = true;
-          if (!assistantMsg.content) assistantMsg.content = '(No response received)';
+          if (!assistantMsg.content && !(assistantMsg._steps && assistantMsg._steps.length)) assistantMsg.content = '(No response received)';
 
           chat.metrics = localMetrics;
           assistantMsg._inTokens = localMetrics.input_tokens;
@@ -6158,6 +6633,9 @@
           if (!chat.incognito) persistChats(chat);
         } finally {
           delete streamControllers[chat.id];
+          // The sandbox bills for idle time, so it dies with the run rather than
+          // lingering for a follow-up that may never come.
+          killSandbox(chat.id);
           if (isActive()) {
             setSendStop(false);
             updateSendBtn();
@@ -6357,6 +6835,7 @@
 
       $('settingTemp').addEventListener('input', function(e) { $('tempValue').textContent = Number(e.target.value).toFixed(2); updateSliderFill(e.target); });
       $('settingMaxTokens').addEventListener('input', function(e) { $('maxTokensValue').textContent = Number(e.target.value).toLocaleString(); updateSliderFill(e.target); });
+      $('settingAgentSteps').addEventListener('input', function(e) { $('agentStepsValue').textContent = e.target.value; updateSliderFill(e.target); });
 
       $('apiKeyToggle').addEventListener('click', function() {
         var input = $('settingApiKey');
@@ -6483,6 +6962,35 @@
         var btn = $('codeModeBtn');
         if (btn) btn.classList.toggle('active-code', codeMode);
         showToast(codeMode ? 'Code mode: on (strict production code)' : 'Code mode: off', 'info');
+      }
+
+      function syncAgentButton() {
+        var btn = $('agentModeBtn');
+        if (!btn) return;
+        var chat = getActiveChat();
+        var on = !!(chat && chat._agentMode);
+        btn.classList.toggle('agent-active', on);
+        var cfg = getActiveModelConfig();
+        var unsupported = cfg && cfg.tools === false;
+        btn.disabled = !settings.e2bKey || !settings.apiEndpoint || !!unsupported;
+        btn.title = !settings.e2bKey
+          ? 'Agent mode — add your E2B API key in settings to enable'
+          : (!settings.apiEndpoint ? 'Agent mode — set your API endpoint in settings first'
+            : (unsupported ? 'Agent mode — this model does not support tool calling'
+              : (on ? 'Agent mode: on — the model can run code in a sandbox' : 'Agent mode — let the model run code in a sandbox')));
+      }
+
+      function toggleAgentMode() {
+        var chat = getActiveChat();
+        if (!chat) { chat = createChat(); }
+        if (!agentAvailable()) {
+          showToast(settings.e2bKey ? 'This model does not support tool calling' : 'Add your E2B API key in settings to use agent mode', 'info');
+          return;
+        }
+        chat._agentMode = !chat._agentMode;
+        if (!chat._agentMode) killSandbox(chat.id);
+        syncAgentButton();
+        showToast(chat._agentMode ? 'Agent mode: on — the model can run code' : 'Agent mode: off', 'info');
       }
 
       messagesEl.addEventListener('click', function(e) {
@@ -6930,6 +7438,14 @@
       });
 
       window.addEventListener('resize', applySidebarState);
+
+      $('agentModeBtn').addEventListener('click', toggleAgentMode);
+
+      // pagehide, not beforeunload: the latter is unreliable on mobile, and an
+      // unreaped sandbox keeps billing until its own timeout expires.
+      window.addEventListener('pagehide', function() {
+        Object.keys(sandboxes).forEach(function(id) { killSandbox(id, true); });
+      });
 
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('sw.js').then(function(reg) {

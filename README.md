@@ -1,6 +1,6 @@
 # Omni
 
-Chat with **12 AI providers** through a single interface — no accounts, no vendor lock-in, no recurring frontend subscriptions. One HTML file, one Cloudflare Worker, and your own API keys.
+Chat with **12 AI providers** through a single interface, and let any of them run real code in a sandbox — no accounts, no vendor lock-in, no recurring frontend subscriptions. One HTML file, one Cloudflare Worker, and your own API keys.
 
 ## Why?
 
@@ -49,6 +49,16 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 - Voice dictation (Web Speech Recognition API)
 - Model picker dropdown with search, grouped by provider, with custom model management (add, edit, delete)
 
+### Agent mode
+
+Toggle the `>_` button in the composer and the model can run real code instead of reasoning about what code would produce.
+
+- Four tools: `run_python`, `run_bash`, `write_file`, `read_file`, all against a sandboxed Linux VM
+- The model loops — runs code, reads the output, runs more — until it can answer, up to a configurable step limit
+- Each tool call renders as a collapsed card in the transcript showing the exact code and its real stdout/stderr
+- Works across all three provider protocols (Anthropic `tool_use`, OpenAI `tool_calls`, Gemini `functionCall`)
+- Requires your own [E2B](https://e2b.dev/) API key, stored in `localStorage` alongside your provider keys
+
 ### Settings
 
 - Per-provider API key with show/hide toggle (stored in `localStorage`, never sent anywhere except your Cloudflare Worker)
@@ -57,6 +67,7 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 - Temperature slider (0–2)
 - Max output tokens slider (64–16,384)
 - Thinking toggle for providers that support it
+- E2B API key and agent step limit
 
 ### Metrics
 
@@ -90,16 +101,20 @@ Browser (index.html)
     ├── localStorage  →  settings, API keys, provider/model selection
     ├── IndexedDB     →  chat history (skipped in incognito mode)
     │
-    └── POST /api/chat  ──→  Cloudflare Worker (worker.js)
-                                  │
-                                  ├── OpenAI-compatible  (OpenAI, Cerebras, NVIDIA, Groq, Together, DeepSeek, xAI, OpenRouter, custom)
-                                  ├── Anthropic API       (Claude — different message format, system prompt handling, thinking tokens)
-                                  └── Google AI Studio    (Gemini — parts array, system instruction, Google Search grounding)
+    ├── POST /api/chat  ──→  Cloudflare Worker (worker.js)
+    │                             │
+    │                             ├── OpenAI-compatible  (OpenAI, Cerebras, NVIDIA, Groq, Together, DeepSeek, xAI, OpenRouter, custom)
+    │                             ├── Anthropic API       (Claude — different message format, system prompt handling, thinking tokens)
+    │                             └── Google AI Studio    (Gemini — parts array, system instruction, Google Search grounding)
+    │
+    └── POST /sandbox/*  ──→  Cloudflare Worker  ──→  E2B (agent mode only)
 ```
 
 The frontend is a single HTML file with vanilla JavaScript. No frameworks, no build step. Tailwind CSS v4 and Prism.js are loaded from CDN at runtime. CSS variables handle all theming — incognito mode swaps the palette by toggling one class on `<body>`.
 
 The Cloudflare Worker (`worker.js`) is the critical piece. Each AI provider speaks a different protocol — OpenAI uses `data: [DONE]` SSE, Anthropic uses typed events (`content_block_delta`, `message_delta`), Google uses its own SSE format with `candidates[].content.parts[]`. The Worker normalizes all three into a single NDJSON stream (`{"delta":"text"}\n`) so the frontend only has to parse one format. It also translates message schemas — OpenAI multipart `content` arrays into Anthropic image blocks, Google `inline_data` parts, etc.
+
+Agent mode extends the same pipe. The Worker normalizes each provider's tool-call format into `tool_start` / `tool_args` / `tool_end` events on that one NDJSON stream, and the loop itself runs in the browser: the page reassembles the call, posts it to the Worker's `/sandbox/*` routes, and feeds the output back as a tool result until the model stops asking for tools. The Worker forwards your own E2B key from each request body and stores nothing, so it still holds no secrets of any kind.
 
 Web search works by intercepting the request in the Worker, calling the Tavily API with the last user message, injecting the results as a system-level prefix, and tracking monthly usage via Cloudflare KV — capped at 200 searches/month per IP plus a 900/month global backstop. The xAI Grok provider uses native search parameters instead. A `GET /usage` route exposes the current counters so the settings UI can render a usage bar.
 
@@ -107,15 +122,15 @@ Web search works by intercepting the request in the Worker, calling the Tavily A
 
 ### Three streaming protocols, one NDJSON pipe
 
-OpenAI, Anthropic, and Google each stream differently — SSE with `data:` prefix, typed events with separate `event:` lines, and a variant SSE format with `thought` metadata on parts. The Worker translates all three into a flat NDJSON stream. The frontend's parser handles five different field names for the content delta (`delta`, `content`, `token`, `text`, and raw non-JSON fallback) because providers don't agree on the schema and the Worker normalizes but doesn't fully homogenize. See `streamOpenAICompatible`, `streamAnthropic`, and `streamGoogle` in `worker.js:148–369`.
+OpenAI, Anthropic, and Google each stream differently — SSE with `data:` prefix, typed events with separate `event:` lines, and a variant SSE format with `thought` metadata on parts. The Worker translates all three into a flat NDJSON stream. The frontend's parser handles five different field names for the content delta (`delta`, `content`, `token`, `text`, and raw non-JSON fallback) because providers don't agree on the schema and the Worker normalizes but doesn't fully homogenize. See `streamOpenAICompatible`, `streamAnthropic`, and `streamGoogle` in `worker.js`.
 
 ### FileReader race condition
 
-`FileReader.readAsDataURL` and `FileReader.readAsText` are asynchronous but the event-based API doesn't compose well with sequential processing. When attaching multiple files, the original code triggered all readers at once, which intermittently dropped files or corrupted the order. The fix was a recursive `readNext()` pattern (`index.html:5386–5408`) that chains readers: each `onload` calls `readNext()` for the next file in the queue, ensuring serial execution. Same approach applies to clipboard paste images (`index.html:5411–5433`).
+`FileReader.readAsDataURL` and `FileReader.readAsText` are asynchronous but the event-based API doesn't compose well with sequential processing. When attaching multiple files, the original code triggered all readers at once, which intermittently dropped files or corrupted the order. The fix was a recursive `readNext()` pattern (`readNext` in `index.html`) that chains readers: each `onload` calls `readNext()` for the next file in the queue, ensuring serial execution. Same approach applies to clipboard paste images.
 
 ### Web search reliability
 
-Tavily's API occasionally returns empty results, a non-200 status, or worse — times out after several seconds. The first fix just added error logging. Then I added an `ALLOWED_ORIGINS` check so only the production Worker URL can trigger search (preventing abuse of the Tavily key). Then a monthly cap via Cloudflare KV: 200 searches/month per IP (`tavily:YYYY-MM:<ip>`, IP taken from `CF-Connecting-IP`) plus a 900/month global backstop (`tavily:YYYY-MM`), both with a 40-day TTL, so one visitor can't burn the whole quota. A `GET /usage` route reads those counters so the settings modal can show a usage bar. The search results are injected as a system prefix with explicit instructions to the model: "Answer the question above using these search results. Do not mention the search." — without this, models would sometimes ignore the results and answer from training data. See `worker.js:396–472`.
+Tavily's API occasionally returns empty results, a non-200 status, or worse — times out after several seconds. The first fix just added error logging. Then I added an `ALLOWED_ORIGINS` check so only the production Worker URL can trigger search (preventing abuse of the Tavily key). Then a monthly cap via Cloudflare KV: 200 searches/month per IP (`tavily:YYYY-MM:<ip>`, IP taken from `CF-Connecting-IP`) plus a 900/month global backstop (`tavily:YYYY-MM`), both with a 40-day TTL, so one visitor can't burn the whole quota. A `GET /usage` route reads those counters so the settings modal can show a usage bar. The search results are injected as a system prefix with explicit instructions to the model: "Answer the question above using these search results. Do not mention the search." — without this, models would sometimes ignore the results and answer from training data. See the search block in `worker.js`.
 
 ### Touch scroll vs. auto-scroll on mobile
 
@@ -123,11 +138,41 @@ During streaming, the UI auto-scrolls to follow new tokens. On mobile, touch-scr
 
 ### Branch navigation for regenerated responses
 
-When you regenerate a response, the previous version is saved to a `_branches` array keyed by the parent user message index. But the branch navigation needs to track which branch is currently active — not just for the current state but also when branches themselves get overlaid by new regenerations. The active branch index is stored in `_branchActive[parentUserIdx]`, where `null` or `>= branches.length` means "viewing current (latest)." Cycling left/right saves the current content back into the branch slot before loading the next one, so you never lose a version. See `index.html:4142–4191`.
+When you regenerate a response, the previous version is saved to a `_branches` array keyed by the parent user message index. But the branch navigation needs to track which branch is currently active — not just for the current state but also when branches themselves get overlaid by new regenerations. The active branch index is stored in `_branchActive[parentUserIdx]`, where `null` or `>= branches.length` means "viewing current (latest)." Cycling left/right saves the current content back into the branch slot before loading the next one, so you never lose a version. See `cycleBranch` in `index.html`.
 
 ### localStorage → IndexedDB migration
 
-Originally, all chats were stored in `localStorage` as a serialized JSON blob — fast to read but blocking on every write, and capped at ~5–10 MB. When the chat list grew beyond ~50 conversations, saves would sometimes fail silently because the quota was exceeded. The migration to IndexedDB was transparent: on init, if no IndexedDB records exist but legacy `localStorage` data does, each chat is written to IndexedDB and the legacy key is removed. New chats write directly to IndexedDB with errors logged but swallowed — the app never blocks on persistence failures. See `index.html:5533–5566`.
+Originally, all chats were stored in `localStorage` as a serialized JSON blob — fast to read but blocking on every write, and capped at ~5–10 MB. When the chat list grew beyond ~50 conversations, saves would sometimes fail silently because the quota was exceeded. The migration to IndexedDB was transparent: on init, if no IndexedDB records exist but legacy `localStorage` data does, each chat is written to IndexedDB and the legacy key is removed. New chats write directly to IndexedDB with errors logged but swallowed — the app never blocks on persistence failures. See the IndexedDB helpers in `index.html`.
+
+### Three tool-calling protocols, one client code path
+
+Adding agent mode meant the model had to be able to call tools, and the three providers disagree about how a tool call streams. Anthropic keys it by `content_block` index and streams arguments as `input_json_delta` fragments. OpenAI keys it by `tool_calls[].index` and sends sparse single-element arrays where the array position is always 0 — using position instead of `tc.index` silently interleaves parallel calls into each other. Gemini doesn't stream tool calls at all; a `functionCall` part arrives complete, with no call id and a `finishReason` of `STOP` that gives no hint a tool was requested.
+
+The Worker normalizes all three into one contract: `tool_start` / `tool_args` / `tool_end`, keyed by a Worker-assigned slot rather than an id, because a slot is the only key all three can produce for every event. Gemini is made to look like a degenerate stream — start, one complete args chunk, end — rather than adding a fourth event shape. `tool_start` is an upsert, since several OpenAI-compatible providers resolve the id or name on a later chunk than the one that opened the slot.
+
+This surfaced a bug that had been dormant since web search shipped. `streamAnthropic` wrote `input_json_delta` straight to the client as a text delta, so tool-argument JSON was being rendered into the message body. Nothing showed it because the only tool was web search, whose blocks are `server_tool_use` and executed server-side. Block-index tracking fixed both: deltas now route to their owning slot, and search blocks are excluded.
+
+### Tool results have to be merged, or Anthropic rejects the turn
+
+When a model makes several tool calls at once and you send back one result per turn, Anthropic 400s with an unhelpful "unexpected role", and Gemini mismatches its `functionResponse` parts. Both want the results of parallel calls coalesced into a single turn. That's easy to miss because it only happens when a model chooses to call in parallel, which is prompt- and model-dependent — so it passes testing and fails later. `groupToolTurns` does the run-merging once, before dispatch, rather than three times inside the builders.
+
+### The agent loop belongs in the browser
+
+The obvious design is to run the think-act loop in the Worker. It's the wrong one here. The Worker would need the provider key in memory for the length of a run, Cloudflare's CPU limits make long loops painful, and it would break the property the whole project rests on — that the Worker holds no secrets and can be audited in one sitting.
+
+So the loop runs in the page, which already holds the key and already parses the stream. The Worker only gains stateless `/sandbox/*` routes that forward the user's own E2B key. The cost is that closing the tab ends the run, which the sandbox timeout backstops anyway.
+
+The restructure had two traps. The history serializer filtered out assistant turns with no text content — and a tool-only turn has none, so it vanished from history and orphaned the results that followed. And the token estimator read `m.content.length` on every message, which throws the moment `content` is `null` on a tool-call turn. Both would have failed on the second iteration, the second with a misleading error.
+
+Keeping tool steps *inside* the assistant message rather than as separate `role:'tool'` entries was the other load-bearing decision. `regenerateMessage` assumes the message before an assistant reply is its parent user turn, and `cycleBranch` assumes the message after a user turn is its reply. Interleaving tool messages would have broken both — and because both guard their assumption and return early, the symptom would have been a regenerate button that silently does nothing.
+
+### Sandboxes bill for sitting still
+
+E2B charges per second a sandbox exists, not per second it computes. An abandoned sandbox bills until something kills it, so the failure mode isn't someone running heavy compute — it's a tab closed mid-run.
+
+Four layers, and only the first survives a closed laptop: sandboxes are created with a short timeout so E2B reaps them itself; a keepalive pings only while a run is actually in flight, so walking away mid-conversation lets it expire; the run's `finally` kills it explicitly; and `pagehide` (not `beforeunload`, which is unreliable on mobile) fires a `sendBeacon`. The keepalive route reports its real status rather than returning a blind 200 — a keepalive that silently no-ops is exactly how sandboxes end up billing after everyone's gone home.
+
+Model-written code is also never shell-quoted. It's base64'd in the Worker and decoded inside the sandbox, which removes every quoting and escaping hazard at once instead of playing whack-a-mole with backslashes and backticks.
 
 ### API key security model
 
@@ -152,7 +197,13 @@ Example with Cloudflare Pages:
 1. Pages → Create a project → Upload assets
 2. Drag in the four files and deploy
 
-### 3. Configure the app
+### 3. Agent mode (optional)
+
+Agent mode needs an [E2B](https://e2b.dev/) API key, which you paste into Settings like any provider key. It is stored in your browser and forwarded to your own Worker — the Worker holds no E2B key of its own, so nobody else's usage lands on your bill.
+
+E2B's free tier includes 100 sandbox-hours/month. Billing is per second of sandbox *existence*, not execution, so keep the step limit modest and let sandboxes expire.
+
+### 4. Configure the app
 
 1. Open the deployed URL
 2. Click the settings icon in the sidebar

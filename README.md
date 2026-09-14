@@ -57,7 +57,8 @@ Toggle the `>_` button in the composer and the model can run real code instead o
 - The model loops — runs code, reads the output, runs more — until it can answer, up to a configurable step limit
 - Each tool call renders as a collapsed card in the transcript showing the exact code and its real stdout/stderr
 - Works across all three provider protocols (Anthropic `tool_use`, OpenAI `tool_calls`, Gemini `functionCall`)
-- Requires your own [E2B](https://e2b.dev/) API key, stored in `localStorage` alongside your provider keys
+- Choose your sandbox backend: [E2B](https://e2b.dev/) or [Novita Agent Sandbox](https://novita.ai/sandbox). Keys are stored per provider, so switching does not mean re-pasting
+- Requires your own sandbox API key, stored in `localStorage` alongside your provider keys
 
 ### Settings
 
@@ -107,7 +108,7 @@ Browser (index.html)
     │                             ├── Anthropic API       (Claude — different message format, system prompt handling, thinking tokens)
     │                             └── Google AI Studio    (Gemini — parts array, system instruction, Google Search grounding)
     │
-    └── POST /sandbox/*  ──→  Cloudflare Worker  ──→  E2B (agent mode only)
+    └── POST /sandbox/*  ──→  Cloudflare Worker  ──→  E2B / Novita (agent mode only)
 ```
 
 The frontend is a single HTML file with vanilla JavaScript. No frameworks, no build step. Tailwind CSS v4 and Prism.js are loaded from CDN at runtime. CSS variables handle all theming — incognito mode swaps the palette by toggling one class on `<body>`.
@@ -166,6 +167,12 @@ The restructure had two traps. The history serializer filtered out assistant tur
 
 Keeping tool steps *inside* the assistant message rather than as separate `role:'tool'` entries was the other load-bearing decision. `regenerateMessage` assumes the message before an assistant reply is its parent user turn, and `cycleBranch` assumes the message after a user turn is its reply. Interleaving tool messages would have broken both — and because both guard their assumption and return early, the symptom would have been a regenerate button that silently does nothing.
 
+### Two sandbox vendors, one code path
+
+Adding Novita alongside E2B looked like it would mean a second integration. It didn't. Reading Novita's SDK rather than trusting the marketing copy — both vendors document an SDK and neither publishes a REST reference — showed the two are wire-compatible: the same `POST /sandboxes` taking `{templateID, timeout}`, the same `sandboxID` / `domain` / `envdAccessToken` response keys, the same `DELETE` and `/timeout` routes, the same daemon on port 49983 behind a `{port}-{sandboxId}.{domain}` host, and the same `process.Process` Connect service. Novita says it is not an E2B fork, and the JSON on the wire is identical either way.
+
+So the two differ by base URL and domain, nothing else, and the Worker carries a small provider table instead of a second implementation. The one thing that must stay per-provider is the SSRF check: the caller supplies the domain, so it is validated against the selected provider's namespace rather than one general pattern — otherwise picking E2B and passing a Novita host (or anything else) would sail through.
+
 ### Sandboxes bill for sitting still
 
 E2B charges per second a sandbox exists, not per second it computes. An abandoned sandbox bills until something kills it, so the failure mode isn't someone running heavy compute — it's a tab closed mid-run.
@@ -200,9 +207,11 @@ Example with Cloudflare Pages:
 
 ### 3. Agent mode (optional)
 
-Agent mode needs an [E2B](https://e2b.dev/) API key, which you paste into Settings like any provider key. It is stored in your browser and forwarded to your own Worker — the Worker holds no E2B key of its own, so nobody else's usage lands on your bill.
+Agent mode needs a sandbox API key from either [E2B](https://e2b.dev/) or [Novita](https://novita.ai/sandbox), which you paste into Settings like any provider key. It is stored in your browser and forwarded to your own Worker — the Worker holds no sandbox key of its own, so nobody else's usage lands on your bill.
 
-E2B's free tier includes 100 sandbox-hours/month. Billing is per second of sandbox *existence*, not execution, so keep the step limit modest and let sandboxes expire.
+Pick the backend under Settings → Agent sandbox provider. Keys are kept per provider, so you can switch between them freely.
+
+Both bill per second of sandbox *existence*, not execution, so keep the step limit modest and let sandboxes expire. E2B's free tier includes 100 sandbox-hours/month; Novita bills per vCPU-second and GiB-second with no per-session startup fee.
 
 ### 4. Configure the app
 

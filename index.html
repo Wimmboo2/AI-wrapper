@@ -3370,10 +3370,19 @@
         </div>
 
         <div class="setting-group">
-          <label class="setting-label" for="settingE2BKey">E2B API Key (agent mode)</label>
-          <p class="setting-desc">Enables agent mode, which lets the model run code in a sandboxed Linux VM. Your key, your account &mdash; stored in this browser and sent only to your own Worker. Sandboxes bill for idle time as well as execution, so they are killed as soon as a run ends.</p>
+          <label class="setting-label" for="settingSandboxProvider">Agent sandbox provider</label>
+          <p class="setting-desc">Which service runs the code in agent mode. Both bill per second of sandbox lifetime, so sandboxes are killed as soon as a run ends. Keys are stored per provider, so you can switch without re-pasting.</p>
+          <select class="setting-input" id="settingSandboxProvider">
+            <option value="e2b">E2B</option>
+            <option value="novita">Novita</option>
+          </select>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="settingSandboxKey"><span id="sandboxKeyLabel">E2B</span> API Key</label>
+          <p class="setting-desc">Enables agent mode, which lets the model run code in a sandboxed Linux VM. Your key, your account &mdash; stored in this browser and sent only to your own Worker, which keeps none of it.</p>
           <div style="position:relative;">
-            <input type="password" class="setting-input setting-input-mono" id="settingE2BKey" placeholder="e2b_..." autocomplete="off" />
+            <input type="password" class="setting-input setting-input-mono" id="settingSandboxKey" placeholder="e2b_..." autocomplete="off" />
           </div>
         </div>
 
@@ -3788,6 +3797,8 @@
         quickCustomModels: [],
         promptTemplates: DEFAULT_TEMPLATES,
         e2bKey: '',
+        sandboxProvider: 'e2b',
+        sandboxKeys: {},
         agentMaxSteps: 8,
         agentSandboxTimeout: 120,
       };
@@ -5885,7 +5896,8 @@
         $('settingThinking').checked = settings.thinking;
         $('settingCustomURL').value = settings.customBaseURL || '';
         $('settingSystemPrompt').value = settings.systemPrompt || '';
-        $('settingE2BKey').value = settings.e2bKey || '';
+        $('settingSandboxProvider').value = activeSandboxProvider();
+        syncSandboxKeyField();
         $('settingAgentSteps').value = settings.agentMaxSteps;
         $('agentStepsValue').textContent = settings.agentMaxSteps;
         updateSliderFill($('settingAgentSteps'));
@@ -5966,7 +5978,13 @@
         settings.thinking = $('settingThinking').checked;
         settings.customBaseURL = $('settingCustomURL').value.trim();
         settings.systemPrompt = $('settingSystemPrompt').value.trim();
-        settings.e2bKey = $('settingE2BKey').value.trim();
+        settings.sandboxProvider = $('settingSandboxProvider').value || 'e2b';
+        if (!settings.sandboxKeys) settings.sandboxKeys = {};
+        var sbKey = $('settingSandboxKey').value.trim();
+        if (sbKey) settings.sandboxKeys[settings.sandboxProvider] = sbKey;
+        else delete settings.sandboxKeys[settings.sandboxProvider];
+        // Keep the legacy field in step so a rollback does not lose the key.
+        if (settings.sandboxProvider === 'e2b') settings.e2bKey = sbKey;
         settings.agentMaxSteps = Math.max(1, Math.min(Number($('settingAgentSteps').value) || 8, 25));
 
         // Validate active model
@@ -6018,6 +6036,24 @@
       // CPU limit. The tradeoff is that closing the tab ends the run — the
       // sandbox's own create-time timeout is the backstop for that.
       // ---------------------------------------------------------------
+
+      // Mirrors SANDBOX_PROVIDERS in worker.js. Novita's Agent Sandbox is
+      // wire-compatible with E2B, so the two share one code path end to end.
+      var SANDBOX_PROVIDERS = {
+        e2b: { label: 'E2B', placeholder: 'e2b_...', site: 'e2b.dev' },
+        novita: { label: 'Novita', placeholder: 'nvta_...', site: 'novita.ai' },
+      };
+
+      function activeSandboxProvider() {
+        return SANDBOX_PROVIDERS[settings.sandboxProvider] ? settings.sandboxProvider : 'e2b';
+      }
+
+      function sandboxKey() {
+        var p = activeSandboxProvider();
+        var keys = settings.sandboxKeys || {};
+        // Fall back to the pre-provider setting so existing users keep working.
+        return keys[p] || (p === 'e2b' ? (settings.e2bKey || '') : '');
+      }
 
       var AGENT_TOOLS = [
         {
@@ -6074,7 +6110,7 @@
 
       function agentAvailable() {
         var cfg = getActiveModelConfig();
-        return !!(settings.e2bKey && settings.apiEndpoint && cfg && cfg.tools !== false);
+        return !!(sandboxKey() && settings.apiEndpoint && cfg && cfg.tools !== false);
       }
 
       async function ensureSandbox(chatId, signal) {
@@ -6082,7 +6118,7 @@
         var res = await fetch(agentEndpoint('/sandbox/create'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ e2bKey: settings.e2bKey, timeoutSec: settings.agentSandboxTimeout }),
+          body: JSON.stringify({ sandboxProvider: activeSandboxProvider(), sandboxKey: sandboxKey(), timeoutSec: settings.agentSandboxTimeout }),
           signal: signal,
         });
         var data = await res.json();
@@ -6102,7 +6138,7 @@
           fetch(agentEndpoint('/sandbox/keepalive'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ e2bKey: settings.e2bKey, sandboxId: sb.sandboxId, timeoutSec: settings.agentSandboxTimeout }),
+            body: JSON.stringify({ sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(), sandboxId: sb.sandboxId, timeoutSec: settings.agentSandboxTimeout }),
           }).catch(function() {});
         }, Math.max(30000, (settings.agentSandboxTimeout * 1000) / 3));
       }
@@ -6116,7 +6152,7 @@
         if (!sb) return;
         delete sandboxes[chatId];
         stopKeepalive(chatId);
-        var payload = JSON.stringify({ e2bKey: settings.e2bKey, sandboxId: sb.sandboxId, domain: sb.domain });
+        var payload = JSON.stringify({ sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(), sandboxId: sb.sandboxId, domain: sb.domain });
         if (useBeacon && navigator.sendBeacon) {
           try {
             navigator.sendBeacon(agentEndpoint('/sandbox/kill'), new Blob([payload], { type: 'application/json' }));
@@ -6133,7 +6169,8 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            e2bKey: settings.e2bKey, sandboxId: sb.sandboxId, domain: sb.domain, token: sb.token,
+            sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(),
+            sandboxId: sb.sandboxId, domain: sb.domain, token: sb.token,
             code: code, language: language,
           }),
           signal: signal,
@@ -6837,6 +6874,18 @@
       $('settingMaxTokens').addEventListener('input', function(e) { $('maxTokensValue').textContent = Number(e.target.value).toLocaleString(); updateSliderFill(e.target); });
       $('settingAgentSteps').addEventListener('input', function(e) { $('agentStepsValue').textContent = e.target.value; updateSliderFill(e.target); });
 
+      function syncSandboxKeyField() {
+        var p = $('settingSandboxProvider').value || 'e2b';
+        var meta = SANDBOX_PROVIDERS[p] || SANDBOX_PROVIDERS.e2b;
+        var keys = settings.sandboxKeys || {};
+        var stored = keys[p] || (p === 'e2b' ? (settings.e2bKey || '') : '');
+        $('sandboxKeyLabel').textContent = meta.label;
+        $('settingSandboxKey').placeholder = meta.placeholder;
+        $('settingSandboxKey').value = stored;
+      }
+
+      $('settingSandboxProvider').addEventListener('change', syncSandboxKeyField);
+
       $('apiKeyToggle').addEventListener('click', function() {
         var input = $('settingApiKey');
         var icon = $('apiKeyToggleIcon');
@@ -6972,9 +7021,10 @@
         btn.classList.toggle('agent-active', on);
         var cfg = getActiveModelConfig();
         var unsupported = cfg && cfg.tools === false;
-        btn.disabled = !settings.e2bKey || !settings.apiEndpoint || !!unsupported;
-        btn.title = !settings.e2bKey
-          ? 'Agent mode — add your E2B API key in settings to enable'
+        var provLabel = (SANDBOX_PROVIDERS[activeSandboxProvider()] || SANDBOX_PROVIDERS.e2b).label;
+        btn.disabled = !sandboxKey() || !settings.apiEndpoint || !!unsupported;
+        btn.title = !sandboxKey()
+          ? 'Agent mode — add your ' + provLabel + ' API key in settings to enable'
           : (!settings.apiEndpoint ? 'Agent mode — set your API endpoint in settings first'
             : (unsupported ? 'Agent mode — this model does not support tool calling'
               : (on ? 'Agent mode: on — the model can run code in a sandbox' : 'Agent mode — let the model run code in a sandbox')));
@@ -6984,7 +7034,8 @@
         var chat = getActiveChat();
         if (!chat) { chat = createChat(); }
         if (!agentAvailable()) {
-          showToast(settings.e2bKey ? 'This model does not support tool calling' : 'Add your E2B API key in settings to use agent mode', 'info');
+          var lbl = (SANDBOX_PROVIDERS[activeSandboxProvider()] || SANDBOX_PROVIDERS.e2b).label;
+          showToast(sandboxKey() ? 'This model does not support tool calling' : 'Add your ' + lbl + ' API key in settings to use agent mode', 'info');
           return;
         }
         chat._agentMode = !chat._agentMode;

@@ -3383,6 +3383,12 @@
           <p class="setting-desc">Enables agent mode, which lets the model run code in a sandboxed Linux VM. Your key, your account &mdash; stored in this browser and sent only to your own Worker, which keeps none of it.</p>
           <div style="position:relative;">
             <input type="password" class="setting-input setting-input-mono" id="settingSandboxKey" placeholder="e2b_..." autocomplete="off" />
+            <button class="password-toggle" id="sandboxKeyToggle" type="button" aria-label="Toggle sandbox key visibility">
+              <svg id="sandboxKeyToggleIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -3410,7 +3416,7 @@
             <span class="setting-value" id="maxTokensValue">2048</span>
           </div>
           <p class="setting-desc">Cap on tokens generated per response.</p>
-          <input type="range" class="setting-slider" id="settingMaxTokens" min="64" max="16384" step="64" value="2048" />
+          <input type="range" class="setting-slider" id="settingMaxTokens" min="64" max="32768" step="64" value="2048" />
         </div>
 
         <div class="setting-group">
@@ -6402,7 +6408,7 @@
         }
         var requestMaxTokens = settings.maxTokens;
         if (lengthHint === 'long') {
-          requestMaxTokens = Math.min(Math.max(settings.maxTokens * 2, settings.maxTokens), 16384);
+          requestMaxTokens = Math.min(Math.max(settings.maxTokens * 2, settings.maxTokens), 32768);
         }
         var requestBody = {
           provider: settings.provider,
@@ -6888,6 +6894,11 @@
       }
 
       function syncSandboxKeyField() {
+        var input = $('settingSandboxKey');
+        if (input.type !== 'password') {
+          input.type = 'password';
+          $('sandboxKeyToggleIcon').innerHTML = ICONS.eye;
+        }
         var p = pendingSandboxProvider || activeSandboxProvider();
         var meta = SANDBOX_PROVIDERS[p] || SANDBOX_PROVIDERS.e2b;
         var keys = settings.sandboxKeys || {};
@@ -6896,6 +6907,13 @@
         $('settingSandboxKey').placeholder = meta.placeholder;
         $('settingSandboxKey').value = stored;
       }
+
+      $('sandboxKeyToggle').addEventListener('click', function() {
+        var input = $('settingSandboxKey');
+        var icon = $('sandboxKeyToggleIcon');
+        if (input.type === 'password') { input.type = 'text'; icon.innerHTML = ICONS.eyeOff; }
+        else { input.type = 'password'; icon.innerHTML = ICONS.eye; }
+      });
 
       $('sandboxProviderSegmented').addEventListener('click', function(e) {
         var btn = e.target.closest('.segmented-btn');

@@ -15,9 +15,23 @@ const PROVIDER_URLS = {
   anthropic: 'https://api.anthropic.com/v1/messages',
 };
 
+// Default allowlist for the Tavily gate. Override with an ALLOWED_ORIGINS
+// environment variable (comma-separated) so a custom domain, a preview
+// deployment, or a fork is not silently refused web search.
+//
+// This is a courtesy gate, NOT a security boundary: a request that sends no
+// Origin header passes, and any client can simply omit it. The per-IP monthly
+// cap below is the control that actually limits spend on the Tavily key.
 const ALLOWED_ORIGINS = [
   'https://claude-like-ai-wrapper.wimmboo.workers.dev',
 ];
+
+function allowedOrigins(env) {
+  const raw = env && env.ALLOWED_ORIGINS;
+  if (!raw) return ALLOWED_ORIGINS;
+  const list = String(raw).split(',').map(function(o) { return o.trim(); }).filter(Boolean);
+  return list.length ? list : ALLOWED_ORIGINS;
+}
 
 const MONTHLY_CAP = 900;
 const IP_CAP = 200;
@@ -1033,7 +1047,7 @@ export default {
       return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
     }
 
-    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL, web_search, searchMode: rawSearchMode, effort, tools: rawTools } = body;
+    const { provider, model, apiKey, messages, temperature, max_tokens, baseURL, web_search, searchMode: rawSearchMode, effort, tools: rawTools } = body;
 
     if (!provider) return jsonResponse({ error: { message: 'Missing provider' } }, 400);
     if (!model) return jsonResponse({ error: { message: 'Missing model' } }, 400);
@@ -1062,19 +1076,29 @@ export default {
       const force = searchMode === 'on';
       if (force || shouldAutoSearch(lastUserText)) {
         const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
-        const originAllowed = !reqOrigin || ALLOWED_ORIGINS.some(function(o) { return reqOrigin.indexOf(o) === 0; });
+        const originAllowed = !reqOrigin || allowedOrigins(env).some(function(o) { return reqOrigin.indexOf(o) === 0; });
         if (originAllowed) {
           const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
           const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
           const ipKey = monthKey + ':' + ip;
           let counter = 0;
           let ipCounter = 0;
+          let counterReadFailed = false;
           try {
             const val = await env.SEARCH_COUNTER.get(monthKey);
             counter = val ? parseInt(val, 10) : 0;
             const ipVal = await env.SEARCH_COUNTER.get(ipKey);
             ipCounter = ipVal ? parseInt(ipVal, 10) : 0;
-          } catch (e) { console.error('KV READ FAILED:', e.message); }
+          } catch (e) {
+            // Both counters are still 0 here, which would wave every request
+            // through and disable the spend caps entirely for as long as KV is
+            // unhappy. A cost control has to fail closed.
+            counterReadFailed = true;
+            console.error('KV READ FAILED:', e.message);
+          }
+          if (counterReadFailed) {
+            searchEvent = { search: { error: 'Search temporarily unavailable (usage counter unreachable).' } };
+          } else
           if (counter >= MONTHLY_CAP) {
             console.error('TAVILY CAP HIT:', monthKey, counter);
             searchEvent = { search: { error: 'Monthly search cap reached (' + MONTHLY_CAP + ').' } };

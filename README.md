@@ -187,6 +187,7 @@ API keys are stored in `localStorage` per provider, never in the Worker source. 
 3. Set the following **secrets** (Worker → Settings → Variables):
    - `TAVILY_API_KEY` — your [Tavily API key](https://tavily.com/) for web search (optional, search is disabled without it)
    - `SEARCH_COUNTER` — create a KV namespace and bind it as `SEARCH_COUNTER` to enable the 900/month search cap
+   - `ALLOWED_ORIGINS` — optional, comma-separated list of origins allowed to trigger web search (for example `https://omni.example.com,https://omni.pages.dev`). Defaults to the origin hardcoded in `worker.js`, so set this if you serve the frontend from your own domain or a preview URL, otherwise search is refused. Note this is a courtesy gate rather than a security boundary — a caller that omits the `Origin` header passes it, and the per-IP monthly cap is what actually limits spend on your Tavily key.
 4. Deploy. Your Worker URL will be something like `https://omni-proxy.your-subdomain.workers.dev`
 
 ### 2. Serve the static files

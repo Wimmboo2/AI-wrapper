@@ -15,9 +15,23 @@ const PROVIDER_URLS = {
   anthropic: 'https://api.anthropic.com/v1/messages',
 };
 
+// Default allowlist for the Tavily gate. Override with an ALLOWED_ORIGINS
+// environment variable (comma-separated) so a custom domain, a preview
+// deployment, or a fork is not silently refused web search.
+//
+// This is a courtesy gate, NOT a security boundary: a request that sends no
+// Origin header passes, and any client can simply omit it. The per-IP monthly
+// cap below is the control that actually limits spend on the Tavily key.
 const ALLOWED_ORIGINS = [
   'https://claude-like-ai-wrapper.wimmboo.workers.dev',
 ];
+
+function allowedOrigins(env) {
+  const raw = env && env.ALLOWED_ORIGINS;
+  if (!raw) return ALLOWED_ORIGINS;
+  const list = String(raw).split(',').map(function(o) { return o.trim(); }).filter(Boolean);
+  return list.length ? list : ALLOWED_ORIGINS;
+}
 
 const MONTHLY_CAP = 900;
 const IP_CAP = 200;
@@ -735,9 +749,10 @@ function validSandboxId(id) {
   return typeof id === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(id);
 }
 function validDomain(d) {
-  // Matches the bare domain E2B actually returns ("e2b.app") as well as any
-  // regional subdomain, while still refusing an arbitrary attacker-chosen host.
-  return typeof d === 'string' && /^([a-z0-9-]+\.)*e2b\.(app|dev)$/.test(d);
+  // Matches every host shape in E2B's own proxy fixtures — the bare domain it
+  // returns ("e2b.app"), regional subdomains ("demo.e2b.app") and their test
+  // domain ("e2b-test.app") — while refusing an arbitrary attacker-chosen host.
+  return typeof d === 'string' && /^([a-z0-9-]+\.)*e2b(-[a-z0-9]+)?\.(app|dev)$/.test(d);
 }
 
 function envdBase(sandboxId, domain) {
@@ -779,14 +794,43 @@ async function readConnectStream(response, onMessage) {
   }
 }
 
-function b64decode(b64) {
-  try { return atob(b64); } catch (_) { return ''; }
+// atob yields a latin1 binary string, so decoding each chunk as text would
+// mangle any non-ASCII output. Collect raw bytes instead and decode once at the
+// end — a multi-byte character split across two stream chunks would otherwise
+// corrupt even with a correct decoder.
+function b64bytes(b64) {
+  try {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  } catch (_) {
+    return new Uint8Array(0);
+  }
+}
+
+function concatBytes(chunks, cap) {
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const out = new Uint8Array(Math.min(total, cap));
+  let at = 0;
+  for (const c of chunks) {
+    if (at >= out.length) break;
+    const take = Math.min(c.length, out.length - at);
+    out.set(c.subarray(0, take), at);
+    at += take;
+  }
+  return { bytes: out, truncated: total > cap };
+}
+
+function utf8(bytes) {
+  return new TextDecoder('utf-8').decode(bytes);
 }
 
 async function e2bCreate(key, timeoutSec, template) {
   const res = await fetch(E2B_API + '/sandboxes', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-KEY': key },
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
     body: JSON.stringify({
       templateID: template || 'base',
       timeout: Math.min(Math.max(timeoutSec || SANDBOX_DEFAULT_TIMEOUT, 30), SANDBOX_MAX_TIMEOUT),
@@ -831,7 +875,7 @@ async function handleSandbox(path, request) {
 
   if (path === '/sandbox/kill') {
     try {
-      await fetch(E2B_API + '/sandboxes/' + sandboxId, { method: 'DELETE', headers: { 'X-API-KEY': key } });
+      await fetch(E2B_API + '/sandboxes/' + sandboxId, { method: 'DELETE', headers: { 'X-API-Key': key } });
     } catch (e) { console.error('E2B KILL FAILED:', e.message); }
     return jsonResponse({ ok: true }, 200);
   }
@@ -841,7 +885,7 @@ async function handleSandbox(path, request) {
     try {
       const res = await fetch(E2B_API + '/sandboxes/' + sandboxId + '/timeout', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-KEY': key },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
         body: JSON.stringify({ timeout: secs }),
       });
       // Report the real outcome: a keepalive that silently no-ops is how
@@ -869,17 +913,19 @@ async function handleSandbox(path, request) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(body.timeoutMs || EXEC_MAX_MS, EXEC_MAX_MS));
 
-    let stdout = '';
-    let stderr = '';
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let stdoutLen = 0;
+    let stderrLen = 0;
     let exitCode = null;
-    let truncated = false;
+    let tailErr = '';
     const started = Date.now();
 
     try {
       const headers = {
         'Content-Type': 'application/connect+json',
         'connect-protocol-version': '1',
-        'X-API-KEY': key,
+        'X-API-Key': key,
       };
       if (body.token) headers['X-Access-Token'] = body.token;
 
@@ -900,28 +946,36 @@ async function handleSandbox(path, request) {
 
       await readConnectStream(res, (flags, msg) => {
         if (flags & 0x02) {
-          if (msg.error) stderr += '\n[stream error] ' + (msg.error.message || JSON.stringify(msg.error));
+          if (msg.error) tailErr += '\n[stream error] ' + (msg.error.message || JSON.stringify(msg.error));
           return;
         }
         const ev = msg.event || (msg.result && msg.result.event) || null;
         if (!ev) return;
         if (ev.data) {
           // stdout/stderr are protobuf `bytes`, so Connect JSON delivers base64.
-          if (ev.data.stdout && stdout.length < OUTPUT_CAP) stdout += b64decode(ev.data.stdout);
-          if (ev.data.stderr && stderr.length < OUTPUT_CAP) stderr += b64decode(ev.data.stderr);
+          if (ev.data.stdout && stdoutLen < OUTPUT_CAP) {
+            const b = b64bytes(ev.data.stdout);
+            stdoutChunks.push(b); stdoutLen += b.length;
+          }
+          if (ev.data.stderr && stderrLen < OUTPUT_CAP) {
+            const b = b64bytes(ev.data.stderr);
+            stderrChunks.push(b); stderrLen += b.length;
+          }
         } else if (ev.end) {
           exitCode = typeof ev.end.exitCode === 'number' ? ev.end.exitCode
             : (typeof ev.end.exit_code === 'number' ? ev.end.exit_code : 0);
-          if (ev.end.error) stderr += '\n' + ev.end.error;
+          if (ev.end.error) tailErr += '\n' + ev.end.error;
         }
       });
     } catch (e) {
       clearTimeout(timer);
       const aborted = e.name === 'AbortError';
+      const oPart = concatBytes(stdoutChunks, OUTPUT_CAP);
+      const ePart = concatBytes(stderrChunks, OUTPUT_CAP);
       return jsonResponse({
         ok: false,
-        stdout: stdout.slice(0, OUTPUT_CAP),
-        stderr: (stderr + (aborted ? '\n[timed out]' : '\n' + e.message)).slice(0, OUTPUT_CAP),
+        stdout: utf8(oPart.bytes),
+        stderr: utf8(ePart.bytes) + tailErr + (aborted ? '\n[timed out]' : '\n' + e.message),
         exit_code: null,
         timed_out: aborted,
         duration_ms: Date.now() - started,
@@ -931,15 +985,15 @@ async function handleSandbox(path, request) {
 
     // Context is the scarce resource here — a runaway print loop would otherwise
     // fill the window and get re-sent on every subsequent agent turn.
-    if (stdout.length > OUTPUT_CAP) { stdout = stdout.slice(0, OUTPUT_CAP); truncated = true; }
-    if (stderr.length > OUTPUT_CAP) { stderr = stderr.slice(0, OUTPUT_CAP); truncated = true; }
+    const outPart = concatBytes(stdoutChunks, OUTPUT_CAP);
+    const errPart = concatBytes(stderrChunks, OUTPUT_CAP);
 
     return jsonResponse({
       ok: exitCode === 0 || exitCode === null,
-      stdout,
-      stderr,
+      stdout: utf8(outPart.bytes),
+      stderr: utf8(errPart.bytes) + tailErr,
       exit_code: exitCode,
-      truncated,
+      truncated: outPart.truncated || errPart.truncated,
       duration_ms: Date.now() - started,
     }, 200);
   }
@@ -993,7 +1047,7 @@ export default {
       return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
     }
 
-    const { provider, model, apiKey, messages, temperature, max_tokens, thinking, baseURL, web_search, searchMode: rawSearchMode, effort, tools: rawTools } = body;
+    const { provider, model, apiKey, messages, temperature, max_tokens, baseURL, web_search, searchMode: rawSearchMode, effort, tools: rawTools } = body;
 
     if (!provider) return jsonResponse({ error: { message: 'Missing provider' } }, 400);
     if (!model) return jsonResponse({ error: { message: 'Missing model' } }, 400);
@@ -1022,19 +1076,29 @@ export default {
       const force = searchMode === 'on';
       if (force || shouldAutoSearch(lastUserText)) {
         const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
-        const originAllowed = !reqOrigin || ALLOWED_ORIGINS.some(function(o) { return reqOrigin.indexOf(o) === 0; });
+        const originAllowed = !reqOrigin || allowedOrigins(env).some(function(o) { return reqOrigin.indexOf(o) === 0; });
         if (originAllowed) {
           const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
           const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
           const ipKey = monthKey + ':' + ip;
           let counter = 0;
           let ipCounter = 0;
+          let counterReadFailed = false;
           try {
             const val = await env.SEARCH_COUNTER.get(monthKey);
             counter = val ? parseInt(val, 10) : 0;
             const ipVal = await env.SEARCH_COUNTER.get(ipKey);
             ipCounter = ipVal ? parseInt(ipVal, 10) : 0;
-          } catch (e) { console.error('KV READ FAILED:', e.message); }
+          } catch (e) {
+            // Both counters are still 0 here, which would wave every request
+            // through and disable the spend caps entirely for as long as KV is
+            // unhappy. A cost control has to fail closed.
+            counterReadFailed = true;
+            console.error('KV READ FAILED:', e.message);
+          }
+          if (counterReadFailed) {
+            searchEvent = { search: { error: 'Search temporarily unavailable (usage counter unreachable).' } };
+          } else
           if (counter >= MONTHLY_CAP) {
             console.error('TAVILY CAP HIT:', monthKey, counter);
             searchEvent = { search: { error: 'Monthly search cap reached (' + MONTHLY_CAP + ').' } };

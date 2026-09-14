@@ -735,8 +735,32 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
 // which is the same reframing job this Worker already does for LLM protocols.
 // ---------------------------------------------------------------------------
 
-const E2B_API = 'https://api.e2b.app';
-const E2B_DEFAULT_DOMAIN = 'e2b.app';
+// Novita's Agent Sandbox is wire-compatible with E2B: same POST /sandboxes with
+// {templateID, timeout}, same sandboxID/domain/envdAccessToken response keys,
+// same DELETE and /timeout routes, same envd on 49983 behind a
+// {port}-{sandboxId}.{domain} host, and the same "process.Process" Connect
+// service. So the two differ only by base URL and domain, not by code path.
+// Verified against api.e2b.app's OpenAPI spec and novita-sandbox 2.1.1.
+const SANDBOX_PROVIDERS = {
+  e2b: {
+    label: 'E2B',
+    api: 'https://api.e2b.app',
+    defaultDomain: 'e2b.app',
+    // Covers the bare domain, regional subdomains and their test domain.
+    domainRe: /^([a-z0-9-]+\.)*e2b(-[a-z0-9]+)?\.(app|dev)$/,
+  },
+  novita: {
+    label: 'Novita',
+    api: 'https://api.us-phx-1.sandbox.novita.ai',
+    defaultDomain: 'us-phx-1.sandbox.novita.ai',
+    domainRe: /^([a-z0-9-]+\.)*sandbox\.novita\.ai$/,
+  },
+};
+
+function sandboxProvider(name) {
+  return SANDBOX_PROVIDERS[name] || SANDBOX_PROVIDERS.e2b;
+}
+
 const E2B_ENVD_PORT = 49983;
 const SANDBOX_MAX_TIMEOUT = 300;
 const SANDBOX_DEFAULT_TIMEOUT = 120;
@@ -748,15 +772,14 @@ const OUTPUT_CAP = 32768;
 function validSandboxId(id) {
   return typeof id === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(id);
 }
-function validDomain(d) {
-  // Matches every host shape in E2B's own proxy fixtures — the bare domain it
-  // returns ("e2b.app"), regional subdomains ("demo.e2b.app") and their test
-  // domain ("e2b-test.app") — while refusing an arbitrary attacker-chosen host.
-  return typeof d === 'string' && /^([a-z0-9-]+\.)*e2b(-[a-z0-9]+)?\.(app|dev)$/.test(d);
+// The domain is caller-supplied and interpolated into a URL, so it is checked
+// against the selected provider's namespace rather than a general pattern.
+function validDomain(d, prov) {
+  return typeof d === 'string' && prov.domainRe.test(d);
 }
 
-function envdBase(sandboxId, domain) {
-  const host = validDomain(domain) ? domain : E2B_DEFAULT_DOMAIN;
+function envdBase(sandboxId, domain, prov) {
+  const host = validDomain(domain, prov) ? domain : prov.defaultDomain;
   return 'https://' + E2B_ENVD_PORT + '-' + sandboxId + '.' + host;
 }
 
@@ -827,8 +850,8 @@ function utf8(bytes) {
   return new TextDecoder('utf-8').decode(bytes);
 }
 
-async function e2bCreate(key, timeoutSec, template) {
-  const res = await fetch(E2B_API + '/sandboxes', {
+async function sandboxCreate(prov, key, timeoutSec, template) {
+  const res = await fetch(prov.api + '/sandboxes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
     body: JSON.stringify({
@@ -837,14 +860,14 @@ async function e2bCreate(key, timeoutSec, template) {
     }),
   });
   const text = await res.text();
-  if (!res.ok) return { error: 'E2B create failed (' + res.status + '): ' + text.slice(0, 300) };
+  if (!res.ok) return { error: prov.label + ' create failed (' + res.status + '): ' + text.slice(0, 300) };
   let data = {};
-  try { data = JSON.parse(text); } catch (_) { return { error: 'E2B returned unparseable JSON on create' }; }
+  try { data = JSON.parse(text); } catch (_) { return { error: prov.label + ' returned unparseable JSON on create' }; }
   const sandboxId = data.sandboxID || data.sandboxId || '';
-  if (!validSandboxId(sandboxId)) return { error: 'E2B returned no usable sandbox id' };
+  if (!validSandboxId(sandboxId)) return { error: prov.label + ' returned no usable sandbox id' };
   return {
     sandboxId,
-    domain: validDomain(data.domain) ? data.domain : E2B_DEFAULT_DOMAIN,
+    domain: validDomain(data.domain, prov) ? data.domain : prov.defaultDomain,
     token: data.envdAccessToken || '',
   };
 }
@@ -854,36 +877,38 @@ async function handleSandbox(path, request) {
   try { body = await request.json(); } catch (_) {
     return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
   }
-  const key = body.e2bKey;
+  const prov = sandboxProvider(body.sandboxProvider);
+  // e2bKey is still accepted so an older cached frontend keeps working.
+  const key = body.sandboxKey || body.e2bKey;
   if (!key || typeof key !== 'string') {
-    return jsonResponse({ error: { message: 'Missing E2B API key' } }, 400);
+    return jsonResponse({ error: { message: 'Missing ' + prov.label + ' API key' } }, 400);
   }
 
   if (path === '/sandbox/create') {
-    const made = await e2bCreate(key, body.timeoutSec, body.template);
+    const made = await sandboxCreate(prov, key, body.timeoutSec, body.template);
     if (made.error) return jsonResponse({ error: { message: made.error } }, 502);
-    return jsonResponse(made, 200);
+    return jsonResponse(Object.assign({ provider: body.sandboxProvider || 'e2b' }, made), 200);
   }
 
   const sandboxId = body.sandboxId;
   if (!validSandboxId(sandboxId)) {
     return jsonResponse({ error: { message: 'Invalid sandbox id' } }, 400);
   }
-  if (body.domain && !validDomain(body.domain)) {
-    return jsonResponse({ error: { message: 'Invalid sandbox domain' } }, 400);
+  if (body.domain && !validDomain(body.domain, prov)) {
+    return jsonResponse({ error: { message: 'Invalid sandbox domain for ' + prov.label } }, 400);
   }
 
   if (path === '/sandbox/kill') {
     try {
-      await fetch(E2B_API + '/sandboxes/' + sandboxId, { method: 'DELETE', headers: { 'X-API-Key': key } });
-    } catch (e) { console.error('E2B KILL FAILED:', e.message); }
+      await fetch(prov.api + '/sandboxes/' + sandboxId, { method: 'DELETE', headers: { 'X-API-Key': key } });
+    } catch (e) { console.error('SANDBOX KILL FAILED:', e.message); }
     return jsonResponse({ ok: true }, 200);
   }
 
   if (path === '/sandbox/keepalive') {
     const secs = Math.min(Math.max(body.timeoutSec || SANDBOX_DEFAULT_TIMEOUT, 30), SANDBOX_MAX_TIMEOUT);
     try {
-      const res = await fetch(E2B_API + '/sandboxes/' + sandboxId + '/timeout', {
+      const res = await fetch(prov.api + '/sandboxes/' + sandboxId + '/timeout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
         body: JSON.stringify({ timeout: secs }),
@@ -929,7 +954,7 @@ async function handleSandbox(path, request) {
       };
       if (body.token) headers['X-Access-Token'] = body.token;
 
-      const res = await fetch(envdBase(sandboxId, body.domain) + '/process.Process/Start', {
+      const res = await fetch(envdBase(sandboxId, body.domain, prov) + '/process.Process/Start', {
         method: 'POST',
         headers,
         body: connectFrame({

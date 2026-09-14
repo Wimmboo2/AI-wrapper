@@ -3381,7 +3381,7 @@
         <div class="setting-group">
           <label class="setting-label" for="settingSandboxKey"><span id="sandboxKeyLabel">E2B</span> API Key</label>
           <p class="setting-desc">Enables agent mode, which lets the model run code in a sandboxed Linux VM. Your key, your account &mdash; stored in this browser and sent only to your own Worker, which keeps none of it.</p>
-          <div style="position:relative;">
+          <div class="password-wrap">
             <input type="password" class="setting-input setting-input-mono" id="settingSandboxKey" placeholder="e2b_..." autocomplete="off" />
             <button class="password-toggle" id="sandboxKeyToggle" type="button" aria-label="Toggle sandbox key visibility">
               <svg id="sandboxKeyToggleIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
@@ -6110,6 +6110,14 @@
       var sandboxes = {};
       var keepaliveTimers = {};
 
+      // The Worker is deployed by hand, so it can lag the frontend. Sending the
+      // pre-provider field name too means an older Worker still works for E2B
+      // instead of failing with a confusing "Missing E2B API key".
+      function withLegacyKey(body) {
+        if ((body.sandboxProvider || 'e2b') === 'e2b' && body.sandboxKey) body.e2bKey = body.sandboxKey;
+        return body;
+      }
+
       function agentEndpoint(path) {
         return (settings.apiEndpoint || '').replace(/\/+$/, '') + path;
       }
@@ -6124,7 +6132,7 @@
         var res = await fetch(agentEndpoint('/sandbox/create'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sandboxProvider: activeSandboxProvider(), sandboxKey: sandboxKey(), timeoutSec: settings.agentSandboxTimeout }),
+          body: JSON.stringify(withLegacyKey({ sandboxProvider: activeSandboxProvider(), sandboxKey: sandboxKey(), timeoutSec: settings.agentSandboxTimeout })),
           signal: signal,
         });
         var data = await res.json();
@@ -6144,7 +6152,7 @@
           fetch(agentEndpoint('/sandbox/keepalive'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(), sandboxId: sb.sandboxId, timeoutSec: settings.agentSandboxTimeout }),
+            body: JSON.stringify(withLegacyKey({ sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(), sandboxId: sb.sandboxId, timeoutSec: settings.agentSandboxTimeout })),
           }).catch(function() {});
         }, Math.max(30000, (settings.agentSandboxTimeout * 1000) / 3));
       }
@@ -6158,7 +6166,7 @@
         if (!sb) return;
         delete sandboxes[chatId];
         stopKeepalive(chatId);
-        var payload = JSON.stringify({ sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(), sandboxId: sb.sandboxId, domain: sb.domain });
+        var payload = JSON.stringify(withLegacyKey({ sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(), sandboxId: sb.sandboxId, domain: sb.domain }));
         if (useBeacon && navigator.sendBeacon) {
           try {
             navigator.sendBeacon(agentEndpoint('/sandbox/kill'), new Blob([payload], { type: 'application/json' }));
@@ -6174,11 +6182,11 @@
         return fetch(agentEndpoint('/sandbox/exec'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(withLegacyKey({
             sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(),
             sandboxId: sb.sandboxId, domain: sb.domain, token: sb.token,
             code: code, language: language,
-          }),
+          })),
           signal: signal,
         }).then(function(r) { return r.json(); });
       }

@@ -3372,10 +3372,10 @@
         <div class="setting-group">
           <label class="setting-label" for="settingSandboxProvider">Agent sandbox provider</label>
           <p class="setting-desc">Which service runs the code in agent mode. Both bill per second of sandbox lifetime, so sandboxes are killed as soon as a run ends. Keys are stored per provider, so you can switch without re-pasting.</p>
-          <select class="setting-input" id="settingSandboxProvider">
-            <option value="e2b">E2B</option>
-            <option value="novita">Novita</option>
-          </select>
+          <div class="segmented" id="sandboxProviderSegmented">
+            <button type="button" class="segmented-btn" data-sandbox="e2b">E2B</button>
+            <button type="button" class="segmented-btn" data-sandbox="novita">Novita</button>
+          </div>
         </div>
 
         <div class="setting-group">
@@ -3383,6 +3383,12 @@
           <p class="setting-desc">Enables agent mode, which lets the model run code in a sandboxed Linux VM. Your key, your account &mdash; stored in this browser and sent only to your own Worker, which keeps none of it.</p>
           <div style="position:relative;">
             <input type="password" class="setting-input setting-input-mono" id="settingSandboxKey" placeholder="e2b_..." autocomplete="off" />
+            <button class="password-toggle" id="sandboxKeyToggle" type="button" aria-label="Toggle sandbox key visibility">
+              <svg id="sandboxKeyToggleIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -3410,7 +3416,7 @@
             <span class="setting-value" id="maxTokensValue">2048</span>
           </div>
           <p class="setting-desc">Cap on tokens generated per response.</p>
-          <input type="range" class="setting-slider" id="settingMaxTokens" min="64" max="16384" step="64" value="2048" />
+          <input type="range" class="setting-slider" id="settingMaxTokens" min="64" max="32768" step="64" value="2048" />
         </div>
 
         <div class="setting-group">
@@ -5896,7 +5902,7 @@
         $('settingThinking').checked = settings.thinking;
         $('settingCustomURL').value = settings.customBaseURL || '';
         $('settingSystemPrompt').value = settings.systemPrompt || '';
-        $('settingSandboxProvider').value = activeSandboxProvider();
+        renderSandboxProviderControl();
         syncSandboxKeyField();
         $('settingAgentSteps').value = settings.agentMaxSteps;
         $('agentStepsValue').textContent = settings.agentMaxSteps;
@@ -5978,7 +5984,7 @@
         settings.thinking = $('settingThinking').checked;
         settings.customBaseURL = $('settingCustomURL').value.trim();
         settings.systemPrompt = $('settingSystemPrompt').value.trim();
-        settings.sandboxProvider = $('settingSandboxProvider').value || 'e2b';
+        settings.sandboxProvider = pendingSandboxProvider || 'e2b';
         if (!settings.sandboxKeys) settings.sandboxKeys = {};
         var sbKey = $('settingSandboxKey').value.trim();
         if (sbKey) settings.sandboxKeys[settings.sandboxProvider] = sbKey;
@@ -6402,7 +6408,7 @@
         }
         var requestMaxTokens = settings.maxTokens;
         if (lengthHint === 'long') {
-          requestMaxTokens = Math.min(Math.max(settings.maxTokens * 2, settings.maxTokens), 16384);
+          requestMaxTokens = Math.min(Math.max(settings.maxTokens * 2, settings.maxTokens), 32768);
         }
         var requestBody = {
           provider: settings.provider,
@@ -6874,8 +6880,26 @@
       $('settingMaxTokens').addEventListener('input', function(e) { $('maxTokensValue').textContent = Number(e.target.value).toLocaleString(); updateSliderFill(e.target); });
       $('settingAgentSteps').addEventListener('input', function(e) { $('agentStepsValue').textContent = e.target.value; updateSliderFill(e.target); });
 
+      // Tracks the selection while the modal is open; only committed on save.
+      var pendingSandboxProvider = null;
+
+      function renderSandboxProviderControl() {
+        pendingSandboxProvider = activeSandboxProvider();
+        var seg = $('sandboxProviderSegmented');
+        if (!seg) return;
+        var btns = seg.querySelectorAll('.segmented-btn');
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].classList.toggle('active', btns[i].getAttribute('data-sandbox') === pendingSandboxProvider);
+        }
+      }
+
       function syncSandboxKeyField() {
-        var p = $('settingSandboxProvider').value || 'e2b';
+        var input = $('settingSandboxKey');
+        if (input.type !== 'password') {
+          input.type = 'password';
+          $('sandboxKeyToggleIcon').innerHTML = ICONS.eye;
+        }
+        var p = pendingSandboxProvider || activeSandboxProvider();
         var meta = SANDBOX_PROVIDERS[p] || SANDBOX_PROVIDERS.e2b;
         var keys = settings.sandboxKeys || {};
         var stored = keys[p] || (p === 'e2b' ? (settings.e2bKey || '') : '');
@@ -6884,7 +6908,27 @@
         $('settingSandboxKey').value = stored;
       }
 
-      $('settingSandboxProvider').addEventListener('change', syncSandboxKeyField);
+      $('sandboxKeyToggle').addEventListener('click', function() {
+        var input = $('settingSandboxKey');
+        var icon = $('sandboxKeyToggleIcon');
+        if (input.type === 'password') { input.type = 'text'; icon.innerHTML = ICONS.eyeOff; }
+        else { input.type = 'password'; icon.innerHTML = ICONS.eye; }
+      });
+
+      $('sandboxProviderSegmented').addEventListener('click', function(e) {
+        var btn = e.target.closest('.segmented-btn');
+        if (!btn) return;
+        // Stash whatever is typed before switching, so an unsaved key is not lost.
+        var typed = $('settingSandboxKey').value.trim();
+        if (!settings.sandboxKeys) settings.sandboxKeys = {};
+        if (typed) settings.sandboxKeys[pendingSandboxProvider] = typed;
+        pendingSandboxProvider = btn.getAttribute('data-sandbox');
+        var btns = this.querySelectorAll('.segmented-btn');
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].classList.toggle('active', btns[i] === btn);
+        }
+        syncSandboxKeyField();
+      });
 
       $('apiKeyToggle').addEventListener('click', function() {
         var input = $('settingApiKey');

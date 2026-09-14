@@ -66,7 +66,7 @@ Toggle the `>_` button in the composer and the model can run real code instead o
 - Custom provider section: base URL + custom model list for any OpenAI-compatible endpoint
 - System prompt editor
 - Temperature slider (0–2)
-- Max output tokens slider (64–16,384)
+- Max output tokens slider (64–32,768) — note that many models cap lower and will reject a request above their own limit
 - Thinking toggle for providers that support it
 - E2B API key and agent step limit
 

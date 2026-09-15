@@ -6249,7 +6249,7 @@
       var TAG_SCAN_RE = /<\s*\/?\s*[a-zA-Z]+\s*>/g;
 
       function makeThinkSplitter() {
-        return { buf: '', inThink: false };
+        return { buf: '', inThink: false, sawOpen: false, reclaimed: false };
       }
 
       // Finds the earliest tag from `tags` in `hay`, tolerating case and internal
@@ -6282,25 +6282,46 @@
         return 0;
       }
 
-      // Feeds a chunk through the splitter. Returns {text, think, closed}: the
-      // part that belongs in the answer, the part that belongs in the thinking
-      // panel, and whether a closing tag was seen in this chunk.
+      // Feeds a chunk through the splitter. Returns {text, think, closed, reclaim}:
+      // the part that belongs in the answer, the part that belongs in the thinking
+      // panel, whether a closing tag was seen, and whether everything emitted so
+      // far turned out to be reasoning (see the implicit-open case below).
       function feedThinkSplitter(st, chunk) {
         st.buf += chunk;
         var text = '';
         var think = '';
         var closed = false;
+        var reclaim = false;
 
         while (st.buf) {
           if (!st.inThink) {
             var open = findThinkTag(st.buf, THINK_OPEN_TAGS);
+            // Reasoning models that carry <think> in their prompt template emit
+            // only the CLOSING tag — the reply opens mid-reasoning with no opener
+            // at all. A close arriving before any open means everything so far was
+            // reasoning, so the caller is told to move it. Only ever done once, and
+            // never after a real opening tag, so a later stray tag cannot eat the
+            // answer.
+            var orphan = (st.sawOpen || st.reclaimed) ? null : findThinkTag(st.buf, THINK_CLOSE_TAGS);
+            if (orphan && (!open || orphan.idx < open.idx)) {
+              think += st.buf.slice(0, orphan.idx);
+              st.buf = st.buf.slice(orphan.idx + orphan.len);
+              st.reclaimed = true;
+              reclaim = true;
+              closed = true;
+              continue;
+            }
             if (open) {
               text += st.buf.slice(0, open.idx);
               st.buf = st.buf.slice(open.idx + open.len);
               st.inThink = true;
+              st.sawOpen = true;
               continue;
             }
-            var holdOpen = danglingTagLen(st.buf, THINK_OPEN_TAGS);
+            // While an implicit close is still possible, a partial closing tag has
+            // to be held back too, or "</thi" would be emitted before "nk>" lands.
+            var openCandidates = (st.sawOpen || st.reclaimed) ? THINK_OPEN_TAGS : THINK_OPEN_TAGS.concat(THINK_CLOSE_TAGS);
+            var holdOpen = danglingTagLen(st.buf, openCandidates);
             text += st.buf.slice(0, st.buf.length - holdOpen);
             st.buf = st.buf.slice(st.buf.length - holdOpen);
             break;
@@ -6318,7 +6339,7 @@
           st.buf = st.buf.slice(st.buf.length - holdClose);
           break;
         }
-        return { text: text, think: think, closed: closed };
+        return { text: text, think: think, closed: closed, reclaim: reclaim };
       }
 
       // Releases whatever is still held back when the stream ends, so a partial
@@ -6585,6 +6606,14 @@
           // <think> reasoning into the thinking panel on the way through.
           function applyVisibleDelta(raw) {
             var split = feedThinkSplitter(thinkSplit, raw);
+            // An implicit-open reasoning block: what has already been shown as the
+            // answer was really reasoning, so move it across before appending.
+            if (split.reclaim && assistantMsg.content) {
+              if (settings.thinking) {
+                assistantMsg.thinking = (assistantMsg.thinking || '') + assistantMsg.content;
+              }
+              assistantMsg.content = '';
+            }
             if (split.think && settings.thinking) {
               assistantMsg.thinking = (assistantMsg.thinking || '') + split.think;
             }

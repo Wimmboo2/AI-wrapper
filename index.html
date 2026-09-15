@@ -3805,6 +3805,7 @@
         e2bKey: '',
         sandboxProvider: 'e2b',
         sandboxKeys: {},
+        implicitThinkModels: {},
         agentMaxSteps: 8,
         agentSandboxTimeout: 120,
       };
@@ -6118,6 +6119,11 @@
         return body;
       }
 
+      function thinkModelKey() {
+        var id = settings.model === '__custom__' ? settings.customModelId : settings.model;
+        return (settings.provider || '') + ':' + (id || '');
+      }
+
       function agentEndpoint(path) {
         return (settings.apiEndpoint || '').replace(/\/+$/, '') + path;
       }
@@ -6248,8 +6254,15 @@
       // so the tag list stays small and readable.
       var TAG_SCAN_RE = /<\s*\/?\s*[a-zA-Z]+\s*>/g;
 
-      function makeThinkSplitter() {
-        return { buf: '', inThink: false, sawOpen: false, reclaimed: false };
+      // presumeOpen starts the splitter already inside a reasoning block. Used for
+      // models known to open implicitly, so their reasoning streams straight into
+      // the thinking panel instead of appearing in the answer until the close tag
+      // lands. flushThinkSplitter undoes the presumption if no close ever arrives.
+      function makeThinkSplitter(presumeOpen) {
+        return {
+          buf: '', inThink: !!presumeOpen, sawOpen: false, reclaimed: false,
+          presumed: !!presumeOpen, everClosed: false,
+        };
       }
 
       // Finds the earliest tag from `tags` in `hay`, tolerating case and internal
@@ -6307,6 +6320,7 @@
               think += st.buf.slice(0, orphan.idx);
               st.buf = st.buf.slice(orphan.idx + orphan.len);
               st.reclaimed = true;
+              st.everClosed = true;
               reclaim = true;
               closed = true;
               continue;
@@ -6331,6 +6345,7 @@
             think += st.buf.slice(0, close.idx);
             st.buf = st.buf.slice(close.idx + close.len);
             st.inThink = false;
+            st.everClosed = true;
             closed = true;
             continue;
           }
@@ -6344,11 +6359,17 @@
 
       // Releases whatever is still held back when the stream ends, so a partial
       // tag or an unterminated reasoning block is never silently swallowed.
+      // Returns {text, think, unpresume}. unpresume means the splitter was started
+      // pre-opened for a model believed to open implicitly, but no closing tag ever
+      // arrived — so the reply was a plain answer and belongs back in the body.
       function flushThinkSplitter(st) {
         var rest = st.buf;
         st.buf = '';
-        if (!rest) return { text: '', think: '' };
-        return st.inThink ? { text: '', think: rest } : { text: rest, think: '' };
+        if (st.presumed && !st.everClosed) {
+          return { text: rest, think: '', unpresume: true };
+        }
+        if (!rest) return { text: '', think: '', unpresume: false };
+        return st.inThink ? { text: '', think: rest, unpresume: false } : { text: rest, think: '', unpresume: false };
       }
 
       function safeParseToolArgs(raw) {
@@ -6581,7 +6602,11 @@
         async function runOneTurn(reqBody) {
           var pendingTools = {};
           var toolOrder = [];
-          var thinkSplit = makeThinkSplitter();
+          // Models that opened reasoning implicitly before are trusted to do it
+          // again, so their reasoning goes to the panel from the first token
+          // rather than appearing in the answer until the closing tag lands.
+          var thinkKey = thinkModelKey();
+          var thinkSplit = makeThinkSplitter(!!(settings.implicitThinkModels || {})[thinkKey]);
 
           var res = await fetch(endpoint + '/api/chat', {
             method: 'POST',
@@ -6608,11 +6633,19 @@
             var split = feedThinkSplitter(thinkSplit, raw);
             // An implicit-open reasoning block: what has already been shown as the
             // answer was really reasoning, so move it across before appending.
-            if (split.reclaim && assistantMsg.content) {
-              if (settings.thinking) {
-                assistantMsg.thinking = (assistantMsg.thinking || '') + assistantMsg.content;
+            if (split.reclaim) {
+              // Remember it, so the next reply from this model skips the flash.
+              if (!settings.implicitThinkModels) settings.implicitThinkModels = {};
+              if (!settings.implicitThinkModels[thinkKey]) {
+                settings.implicitThinkModels[thinkKey] = true;
+                saveSettings();
               }
-              assistantMsg.content = '';
+              if (assistantMsg.content) {
+                if (settings.thinking) {
+                  assistantMsg.thinking = (assistantMsg.thinking || '') + assistantMsg.content;
+                }
+                assistantMsg.content = '';
+              }
             }
             if (split.think && settings.thinking) {
               assistantMsg.thinking = (assistantMsg.thinking || '') + split.think;
@@ -6717,9 +6750,21 @@
           }
 
           var tail = flushThinkSplitter(thinkSplit);
-          if (tail.think && settings.thinking) assistantMsg.thinking = (assistantMsg.thinking || '') + tail.think;
-          if (tail.text) assistantMsg.content += tail.text;
-          if ((tail.text || tail.think) && isActive()) updateLastAssistantMessage(assistantMsg);
+          if (tail.unpresume) {
+            // Guessed wrong: this reply had no reasoning block after all, so put
+            // everything back in the answer and stop assuming for this model.
+            if (settings.implicitThinkModels && settings.implicitThinkModels[thinkKey]) {
+              delete settings.implicitThinkModels[thinkKey];
+              saveSettings();
+            }
+            var restored = (assistantMsg.thinking || '') + (tail.text || '');
+            assistantMsg.thinking = '';
+            assistantMsg.content += assistantMsg.content ? restored : restored.replace(/^\s+/, '');
+          } else {
+            if (tail.think && settings.thinking) assistantMsg.thinking = (assistantMsg.thinking || '') + tail.think;
+            if (tail.text) assistantMsg.content += tail.text;
+          }
+          if (isActive()) updateLastAssistantMessage(assistantMsg);
 
           return toolOrder.map(function(k) {
             var t = pendingTools[k];

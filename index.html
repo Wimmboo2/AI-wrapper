@@ -6239,26 +6239,52 @@
       // Incremental because a tag can be cut in half by a chunk boundary: any
       // trailing text that could still turn out to be the start of a tag is held
       // back rather than emitted, and released once the next chunk decides it.
-      var THINK_OPEN = '<think>';
-      var THINK_CLOSE = '</think>';
+      // Matched case-insensitively and across the spellings models actually use,
+      // because an exact "<think>" match silently passes "<thinking>", "<Think>"
+      // and "< think >" straight through into the answer.
+      var THINK_OPEN_TAGS = ['<think>', '<thinking>', '<reason>', '<reasoning>'];
+      var THINK_CLOSE_TAGS = ['</think>', '</thinking>', '</reason>', '</reasoning>'];
+      // Whitespace inside the angle brackets is normalised away before matching,
+      // so the tag list stays small and readable.
+      var TAG_SCAN_RE = /<\s*\/?\s*[a-zA-Z]+\s*>/g;
 
       function makeThinkSplitter() {
         return { buf: '', inThink: false };
       }
 
-      // Longest suffix of s that is a proper prefix of tag — i.e. how much of the
-      // tail might still become a tag once more text arrives.
-      function danglingTagLen(s, tag) {
-        var max = Math.min(s.length, tag.length - 1);
-        for (var n = max; n > 0; n--) {
-          if (s.slice(s.length - n) === tag.slice(0, n)) return n;
+      // Finds the earliest tag from `tags` in `hay`, tolerating case and internal
+      // whitespace. Returns {idx, len} into the ORIGINAL string, or null.
+      function findThinkTag(hay, tags) {
+        TAG_SCAN_RE.lastIndex = 0;
+        var m;
+        while ((m = TAG_SCAN_RE.exec(hay)) !== null) {
+          var norm = m[0].replace(/\s+/g, '').toLowerCase();
+          if (tags.indexOf(norm) !== -1) return { idx: m.index, len: m[0].length };
+        }
+        return null;
+      }
+
+      // How much of the tail might still grow into one of `tags` once more text
+      // arrives — that many characters are held back rather than emitted. Works
+      // from the last "<": if what follows it has no ">" yet and could still be
+      // the start of a tag, it waits for the next chunk.
+      function danglingTagLen(s, tags) {
+        var lt = s.lastIndexOf('<');
+        if (lt === -1) return 0;
+        var tail = s.slice(lt);
+        // Already has a closing bracket, so it is a complete tag that findThinkTag
+        // has declined — nothing left to wait for.
+        if (tail.indexOf('>') !== -1) return 0;
+        var norm = tail.replace(/\s+/g, '').toLowerCase();
+        for (var i = 0; i < tags.length; i++) {
+          if (tags[i].indexOf(norm) === 0) return s.length - lt;
         }
         return 0;
       }
 
       // Feeds a chunk through the splitter. Returns {text, think, closed}: the
       // part that belongs in the answer, the part that belongs in the thinking
-      // panel, and whether a </think> was seen in this chunk.
+      // panel, and whether a closing tag was seen in this chunk.
       function feedThinkSplitter(st, chunk) {
         st.buf += chunk;
         var text = '';
@@ -6267,27 +6293,27 @@
 
         while (st.buf) {
           if (!st.inThink) {
-            var open = st.buf.indexOf(THINK_OPEN);
-            if (open !== -1) {
-              text += st.buf.slice(0, open);
-              st.buf = st.buf.slice(open + THINK_OPEN.length);
+            var open = findThinkTag(st.buf, THINK_OPEN_TAGS);
+            if (open) {
+              text += st.buf.slice(0, open.idx);
+              st.buf = st.buf.slice(open.idx + open.len);
               st.inThink = true;
               continue;
             }
-            var holdOpen = danglingTagLen(st.buf, THINK_OPEN);
+            var holdOpen = danglingTagLen(st.buf, THINK_OPEN_TAGS);
             text += st.buf.slice(0, st.buf.length - holdOpen);
             st.buf = st.buf.slice(st.buf.length - holdOpen);
             break;
           }
-          var close = st.buf.indexOf(THINK_CLOSE);
-          if (close !== -1) {
-            think += st.buf.slice(0, close);
-            st.buf = st.buf.slice(close + THINK_CLOSE.length);
+          var close = findThinkTag(st.buf, THINK_CLOSE_TAGS);
+          if (close) {
+            think += st.buf.slice(0, close.idx);
+            st.buf = st.buf.slice(close.idx + close.len);
             st.inThink = false;
             closed = true;
             continue;
           }
-          var holdClose = danglingTagLen(st.buf, THINK_CLOSE);
+          var holdClose = danglingTagLen(st.buf, THINK_CLOSE_TAGS);
           think += st.buf.slice(0, st.buf.length - holdClose);
           st.buf = st.buf.slice(st.buf.length - holdClose);
           break;
@@ -6296,7 +6322,7 @@
       }
 
       // Releases whatever is still held back when the stream ends, so a partial
-      // tag or an unterminated <think> is never silently swallowed.
+      // tag or an unterminated reasoning block is never silently swallowed.
       function flushThinkSplitter(st) {
         var rest = st.buf;
         st.buf = '';
@@ -6565,7 +6591,10 @@
             if (split.closed) assistantMsg.thinkingComplete = true;
             if (split.text) {
               if (assistantMsg.thinking && assistantMsg.thinkingComplete === false) { assistantMsg.thinkingComplete = true; }
-              assistantMsg.content += split.text;
+              // A reasoning block is usually followed by a newline; without this
+              // the answer would open with a blank line once the tags are gone.
+              var visible = assistantMsg.content ? split.text : split.text.replace(/^\s+/, '');
+              assistantMsg.content += visible;
             }
             if ((split.text || split.think) && isActive()) updateLastAssistantMessage(assistantMsg);
           }

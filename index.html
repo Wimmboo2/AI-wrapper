@@ -6232,6 +6232,78 @@
         }
       }
 
+      // Some models emit their reasoning inline as <think>...</think> inside the
+      // normal content stream rather than as separate reasoning tokens. Split it
+      // out so it lands in the existing thinking UI instead of the answer body.
+      //
+      // Incremental because a tag can be cut in half by a chunk boundary: any
+      // trailing text that could still turn out to be the start of a tag is held
+      // back rather than emitted, and released once the next chunk decides it.
+      var THINK_OPEN = '<think>';
+      var THINK_CLOSE = '</think>';
+
+      function makeThinkSplitter() {
+        return { buf: '', inThink: false };
+      }
+
+      // Longest suffix of s that is a proper prefix of tag — i.e. how much of the
+      // tail might still become a tag once more text arrives.
+      function danglingTagLen(s, tag) {
+        var max = Math.min(s.length, tag.length - 1);
+        for (var n = max; n > 0; n--) {
+          if (s.slice(s.length - n) === tag.slice(0, n)) return n;
+        }
+        return 0;
+      }
+
+      // Feeds a chunk through the splitter. Returns {text, think, closed}: the
+      // part that belongs in the answer, the part that belongs in the thinking
+      // panel, and whether a </think> was seen in this chunk.
+      function feedThinkSplitter(st, chunk) {
+        st.buf += chunk;
+        var text = '';
+        var think = '';
+        var closed = false;
+
+        while (st.buf) {
+          if (!st.inThink) {
+            var open = st.buf.indexOf(THINK_OPEN);
+            if (open !== -1) {
+              text += st.buf.slice(0, open);
+              st.buf = st.buf.slice(open + THINK_OPEN.length);
+              st.inThink = true;
+              continue;
+            }
+            var holdOpen = danglingTagLen(st.buf, THINK_OPEN);
+            text += st.buf.slice(0, st.buf.length - holdOpen);
+            st.buf = st.buf.slice(st.buf.length - holdOpen);
+            break;
+          }
+          var close = st.buf.indexOf(THINK_CLOSE);
+          if (close !== -1) {
+            think += st.buf.slice(0, close);
+            st.buf = st.buf.slice(close + THINK_CLOSE.length);
+            st.inThink = false;
+            closed = true;
+            continue;
+          }
+          var holdClose = danglingTagLen(st.buf, THINK_CLOSE);
+          think += st.buf.slice(0, st.buf.length - holdClose);
+          st.buf = st.buf.slice(st.buf.length - holdClose);
+          break;
+        }
+        return { text: text, think: think, closed: closed };
+      }
+
+      // Releases whatever is still held back when the stream ends, so a partial
+      // tag or an unterminated <think> is never silently swallowed.
+      function flushThinkSplitter(st) {
+        var rest = st.buf;
+        st.buf = '';
+        if (!rest) return { text: '', think: '' };
+        return st.inThink ? { text: '', think: rest } : { text: rest, think: '' };
+      }
+
       function safeParseToolArgs(raw) {
         try {
           var v = JSON.parse(raw || '{}');
@@ -6462,6 +6534,7 @@
         async function runOneTurn(reqBody) {
           var pendingTools = {};
           var toolOrder = [];
+          var thinkSplit = makeThinkSplitter();
 
           var res = await fetch(endpoint + '/api/chat', {
             method: 'POST',
@@ -6481,6 +6554,21 @@
           var reader = res.body.getReader();
           var decoder = new TextDecoder();
           var buffer = '';
+
+          // Applies a chunk of visible stream text, peeling off any inline
+          // <think> reasoning into the thinking panel on the way through.
+          function applyVisibleDelta(raw) {
+            var split = feedThinkSplitter(thinkSplit, raw);
+            if (split.think && settings.thinking) {
+              assistantMsg.thinking = (assistantMsg.thinking || '') + split.think;
+            }
+            if (split.closed) assistantMsg.thinkingComplete = true;
+            if (split.text) {
+              if (assistantMsg.thinking && assistantMsg.thinkingComplete === false) { assistantMsg.thinkingComplete = true; }
+              assistantMsg.content += split.text;
+            }
+            if ((split.text || split.think) && isActive()) updateLastAssistantMessage(assistantMsg);
+          }
 
           while (true) {
             var readResult = await reader.read();
@@ -6503,8 +6591,7 @@
               catch (_) {
                 if (payload) {
                   if (firstTokenAt == null) firstTokenAt = performance.now();
-                  assistantMsg.content += payload;
-                  if (isActive()) updateLastAssistantMessage(assistantMsg);
+                  applyVisibleDelta(payload);
                 }
                 continue;
               }
@@ -6520,9 +6607,7 @@
 
               if (delta) {
                 if (firstTokenAt == null) { firstTokenAt = performance.now(); localMetrics.ttft_ms = firstTokenAt - streamStart; }
-                if (assistantMsg.thinking && assistantMsg.thinkingComplete === false) { assistantMsg.thinkingComplete = true; }
-                assistantMsg.content += delta;
-                if (isActive()) updateLastAssistantMessage(assistantMsg);
+                applyVisibleDelta(delta);
               }
 
               // tool_start is an upsert: providers may resolve id/name on a later
@@ -6572,6 +6657,11 @@
               if (event.error) { throw new Error(event.error.message || event.error || 'Stream error'); }
             }
           }
+
+          var tail = flushThinkSplitter(thinkSplit);
+          if (tail.think && settings.thinking) assistantMsg.thinking = (assistantMsg.thinking || '') + tail.think;
+          if (tail.text) assistantMsg.content += tail.text;
+          if ((tail.text || tail.think) && isActive()) updateLastAssistantMessage(assistantMsg);
 
           return toolOrder.map(function(k) {
             var t = pendingTools[k];

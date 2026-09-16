@@ -93,6 +93,11 @@ an estimate — a value derived from character counts is greyed out and carries 
   conversation does, because every turn re-sends the whole history.
 - Truncation, content filtering and unfinished replies are called out explicitly.
 
+Collapsed it is one line above the composer. Expanded it stays inline on
+desktop; on phones it becomes a bottom sheet — the same treatment the model
+picker and effort menu get — so it never competes with the composer or the
+keyboard for space. Tap the backdrop, the close button, or press Escape.
+
 Where the backend reports its own timings — llama.cpp / llama-cpp-python
 (`timings`), Groq (`x_groq.usage`), Ollama (`eval_duration`) — those are used
 instead of anything measured in the browser, and the footer names the engine.

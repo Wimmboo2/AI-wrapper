@@ -72,13 +72,30 @@ Toggle the `>_` button in the composer and the model can run real code instead o
 
 ### Metrics
 
-Real-time per-response metrics:
-- Generation tokens per second
-- Prompt tokens per second
-- Input/output token counts
-- Time to first token (TTFT)
-- Total response duration
-- Context window usage bar
+Per-response metrics above the composer, collapsed to a one-line summary and
+expandable. Every number is either reported by the provider or visibly marked as
+an estimate — a value derived from character counts is greyed out and carries an
+`est` badge, and the footer says which of the two you are looking at.
+
+- **Gen t/s** — output tokens over the time actually spent generating. Prefill,
+  reasoning-before-first-token and tool execution are all outside the window.
+- **Prefill t/s** — prompt tokens over time-to-first-token, labelled as the upper
+  bound it is.
+- **TTFT** — first token of *any* kind, reasoning included, plus the extra gap
+  before the visible answer starts.
+- **Total** and a time-breakdown bar: prefill → reasoning → answer → tools.
+  Phases that took no time are omitted rather than drawn as zero.
+- **Input / Output** token counts, with cached, cache-write and reasoning token
+  sub-counts where the provider reports them.
+- **Context usage** — what the *next* request will carry, against the model's
+  window. This is the last turn only, not the sum of everything billed.
+- **Billed this chat** — summed across every reply. It grows faster than the
+  conversation does, because every turn re-sends the whole history.
+- Truncation, content filtering and unfinished replies are called out explicitly.
+
+Where the backend reports its own timings — llama.cpp / llama-cpp-python
+(`timings`), Groq (`x_groq.usage`), Ollama (`eval_duration`) — those are used
+instead of anything measured in the browser, and the footer names the engine.
 
 ### Data
 
@@ -172,6 +189,37 @@ Keeping tool steps *inside* the assistant message rather than as separate `role:
 Adding Novita alongside E2B looked like it would mean a second integration. It didn't. Reading Novita's SDK rather than trusting the marketing copy — both vendors document an SDK and neither publishes a REST reference — showed the two are wire-compatible: the same `POST /sandboxes` taking `{templateID, timeout}`, the same `sandboxID` / `domain` / `envdAccessToken` response keys, the same `DELETE` and `/timeout` routes, the same daemon on port 49983 behind a `{port}-{sandboxId}.{domain}` host, and the same `process.Process` Connect service. Novita says it is not an E2B fork, and the JSON on the wire is identical either way.
 
 So the two differ by base URL and domain, nothing else, and the Worker carries a small provider table instead of a second implementation. The one thing that must stay per-provider is the SSRF check: the caller supplies the domain, so it is validated against the selected provider's namespace rather than one general pattern — otherwise picking E2B and passing a Novita host (or anything else) would sail through.
+
+### Tokens the provider never sent
+
+Streaming responses from a strict OpenAI-compatible endpoint carry no usage at
+all unless the request asks for it with `stream_options: {include_usage: true}`.
+Some gateways — Groq, Cerebras, DeepSeek, xAI, OpenRouter — send it unprompted,
+which is exactly what makes the omission hard to spot: token counts appear for
+most providers and silently never for OpenAI itself, Together, Moonshot, NVIDIA,
+or anything self-hosted behind the `custom` provider.
+
+The client had a `content.length / 3.5` fallback for that case, and rendered its
+output identically to a real count. So the numbers were not wrong so much as
+unfalsifiable. Asking for usage fixes the common case; the rest of the fix is
+that an estimate now looks like an estimate.
+
+The same lesson applies to rates. A reply that arrives in one chunk has a
+generation window of about two milliseconds, and dividing two thousand tokens by
+it produces a confident six-figure tokens-per-second. There is no rate to report
+there, so none is reported — the cell disappears and the footer says why.
+
+### Counting an agent run
+
+A single reply can be many requests. The usage handler used to overwrite its
+counters on each `usage` event, so a five-step agent run reported the last step's
+tokens — divided by the whole run's wall clock, sandbox execution included. Both
+errors push the same way, and agent runs read as absurdly slow.
+
+Metrics are now per-turn records that get reduced at the end, which forces the
+distinction the flat version hid: **billed** is the sum across every turn, while
+**context** is the last turn alone, because that is what the next request
+carries. They are different numbers and the old bar showed one label for both.
 
 ### Sandboxes bill for sitting still
 

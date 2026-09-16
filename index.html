@@ -2240,7 +2240,7 @@
 
     .metrics-grid {
       display: none;
-      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
       gap: 8px;
       padding: 4px 0 8px;
     }
@@ -2269,6 +2269,96 @@
     }
 
     .metric-value.accent { color: var(--accent); }
+
+    /* A number the provider never reported, derived from character counts.
+       It has to be visibly different from a real one or the whole bar lies. */
+    .metric-value.estimated { color: var(--text-faint); }
+    .metric-value.estimated::after {
+      content: 'est';
+      font-size: 8.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      vertical-align: super;
+      margin-left: 3px;
+      opacity: 0.65;
+    }
+
+    .metric-sub {
+      font-family: var(--mono);
+      font-size: 9.5px;
+      color: var(--text-faint);
+      margin-top: 3px;
+      line-height: 1.35;
+    }
+
+    .metric-cell.wide { grid-column: 1 / -1; }
+
+    .phase-bar {
+      display: flex;
+      height: 5px;
+      border-radius: 3px;
+      margin-top: 6px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .phase-seg { height: 100%; transition: width 0.3s ease; }
+    .phase-seg.wait { background: var(--text-muted); }
+    .phase-seg.think { background: var(--accent); opacity: 0.4; }
+    .phase-seg.gen { background: var(--accent); }
+    .phase-seg.tool { background: var(--incognito); opacity: 0.8; }
+
+    .phase-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      margin-top: 6px;
+      font-family: var(--mono);
+      font-size: 9.5px;
+      color: var(--text-faint);
+    }
+
+    .phase-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .phase-legend i {
+      width: 6px;
+      height: 6px;
+      border-radius: 2px;
+      display: inline-block;
+      font-style: normal;
+      flex: none;
+    }
+
+    .phase-legend i.wait { background: var(--text-muted); }
+    .phase-legend i.think { background: var(--accent); opacity: 0.4; }
+    .phase-legend i.gen { background: var(--accent); }
+    .phase-legend i.tool { background: var(--incognito); opacity: 0.8; }
+
+    .metrics-foot {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      padding: 6px 2px 2px;
+      margin-top: 2px;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 9.5px;
+      color: var(--text-faint);
+    }
+
+    .metrics-foot span:not(:first-child)::before {
+      content: '\00b7';
+      margin-right: 10px;
+      opacity: 0.6;
+    }
+
+    .metrics-foot .warn { color: var(--danger); }
+
+    .metrics-summary .warn { color: var(--danger); }
 
     .context-bar {
       height: 3px;
@@ -3145,43 +3235,10 @@
             </span>
             <span class="metrics-summary" id="metricsSummary">—</span>
           </button>
-          <div class="metrics-grid">
-            <div class="metric-cell">
-              <div class="metric-label">Gen t/s</div>
-              <div class="metric-value accent" id="metricGenTs">—</div>
-            </div>
-            <div class="metric-cell">
-              <div class="metric-label">Prompt t/s</div>
-              <div class="metric-value" id="metricPromptTs">—</div>
-            </div>
-            <div class="metric-cell">
-              <div class="metric-label">Input tok</div>
-              <div class="metric-value" id="metricInputTok">—</div>
-            </div>
-            <div class="metric-cell">
-              <div class="metric-label">Output tok</div>
-              <div class="metric-value" id="metricOutputTok">—</div>
-            </div>
-            <div class="metric-cell">
-              <div class="metric-label">TTFT</div>
-              <div class="metric-value" id="metricTtft">—</div>
-            </div>
-            <div class="metric-cell">
-              <div class="metric-label">Duration</div>
-              <div class="metric-value" id="metricDuration">—</div>
-            </div>
-            <div class="metric-cell" style="grid-column: span 2;">
-              <div class="metric-label">Context usage</div>
-              <div class="metric-value" id="metricContext">—</div>
-              <div class="context-bar">
-                <div class="context-bar-fill" id="contextBarFill"></div>
-              </div>
-            </div>
-            <div class="metric-cell" style="grid-column: span 2;">
-              <div class="metric-label">Chat total tokens</div>
-              <div class="metric-value" id="metricChatTotal">—</div>
-            </div>
-          </div>
+          <!-- Cells are built by updateMetrics: a metric with no data is left
+               out of the grid entirely rather than rendered as a dash. -->
+          <div class="metrics-grid" id="metricsGrid"></div>
+          <div class="metrics-foot" id="metricsFoot" style="display:none;"></div>
         </div>
 
         <div class="composer-shell" id="composerShell">
@@ -4428,7 +4485,7 @@
 
         saveSettings();
         populateComposerModelSelect();
-        updateMetrics(null);
+        updateMetrics(chatDisplayMetrics(getActiveChat()));
         showToast('Model deleted', 'info');
       }
 
@@ -4586,7 +4643,7 @@
           }
         }
         if (!silent) closeModelPicker();
-        updateMetrics(null);
+        updateMetrics(chatDisplayMetrics(getActiveChat()));
       }
 
       function populateProviderPicker() {
@@ -4726,7 +4783,7 @@
         populateComposerModelSelect();
         updateComposerEffort();
 
-        updateMetrics(null);
+        updateMetrics(chatDisplayMetrics(getActiveChat()));
         showToast(editingModelId !== null ? 'Model updated' : 'Model added: ' + name, 'info');
         hideComposerAddModel();
       }
@@ -4966,7 +5023,7 @@
           var streaming = (chat.id in streamControllers) && idx === chat.messages.length - 1 && msg.role === 'assistant';
           messagesEl.appendChild(buildMessageEl(msg, streaming, idx));
         });
-        updateMetrics(chat.metrics);
+        updateMetrics(chatDisplayMetrics(chat));
         scrollToBottom();
         triggerPrismHighlight();
       }
@@ -5139,6 +5196,21 @@
         });
       }
 
+      // Everything that makes one reply distinct from its siblings. The token
+      // counts belong here too: without them, cycling branches leaves whichever
+      // branch was generated last owning the numbers.
+      var BRANCH_FIELDS = ['content', 'thinking', 'thinkingComplete', '_search', '_steps', '_metrics', '_inTokens', '_outTokens'];
+
+      function snapshotBranch(msg) {
+        var snap = {};
+        BRANCH_FIELDS.forEach(function(k) { snap[k] = msg[k]; });
+        return snap;
+      }
+
+      function restoreBranch(msg, snap) {
+        BRANCH_FIELDS.forEach(function(k) { msg[k] = snap[k]; });
+      }
+
       function regenerateMessage(msgIndex, opts) {
         if (activeChatId in streamControllers) return;
         var chat = getActiveChat();
@@ -5157,7 +5229,7 @@
         var branchArr = chat._branches[parentUserIdx];
         var isDup = branchArr.some(function(b) { return b.content === oldMsg.content && !b._steps && !oldMsg._steps; });
         if (!isDup) {
-          branchArr.push({ content: oldMsg.content, thinking: oldMsg.thinking, thinkingComplete: oldMsg.thinkingComplete, _search: oldMsg._search, _steps: oldMsg._steps });
+          branchArr.push(snapshotBranch(oldMsg));
         }
         chat._branchActive[parentUserIdx] = chat._branches[parentUserIdx].length;
         chat.messages = chat.messages.slice(0, parentUserIdx);
@@ -5187,26 +5259,17 @@
         if (active > branches.length) active = branches.length;
         var total = branches.length + 1;
         if (active < branches.length) {
-          branches[active] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search, _steps: current._steps };
+          branches[active] = snapshotBranch(current);
         } else {
-          chat._liveReplies[parentUserIdx] = { content: current.content, thinking: current.thinking, thinkingComplete: current.thinkingComplete, _search: current._search, _steps: current._steps };
+          chat._liveReplies[parentUserIdx] = snapshotBranch(current);
         }
         active = ((active + direction) % total + total) % total;
         if (active < branches.length) {
-          var loaded = branches[active];
-          current.content = loaded.content;
-          current.thinking = loaded.thinking;
-          current.thinkingComplete = loaded.thinkingComplete;
-          current._search = loaded._search;
-          current._steps = loaded._steps;
+          restoreBranch(current, branches[active]);
         } else {
           var stashed = chat._liveReplies[parentUserIdx];
           if (stashed) {
-            current.content = stashed.content;
-            current.thinking = stashed.thinking;
-            current.thinkingComplete = stashed.thinkingComplete;
-            current._search = stashed._search;
-            current._steps = stashed._steps;
+            restoreBranch(current, stashed);
             delete chat._liveReplies[parentUserIdx];
           }
         }
@@ -5783,50 +5846,340 @@
         triggerPrismHighlight();
       }
 
-      function updateMetrics(m) {
-        var set = function(id, val) { var el = $(id); if (el) el.textContent = val; };
-        if (!m) {
-          ['metricGenTs','metricPromptTs','metricInputTok','metricOutputTok','metricTtft','metricDuration','metricContext','metricsSummary','metricChatTotal'].forEach(function(id) { set(id, '\u2014'); });
-          var fill = $('contextBarFill');
-          if (fill) fill.style.width = '0%';
-          return;
-        }
-        var genTs = m.generation_tokens_per_second != null ? Number(m.generation_tokens_per_second).toFixed(1) : '\u2014';
-        var promptTs = m.prompt_tokens_per_second != null ? Number(m.prompt_tokens_per_second).toFixed(1) : '\u2014';
-        var inputTok = m.input_tokens != null ? String(m.input_tokens) : '\u2014';
-        var outputTok = m.output_tokens != null ? String(m.output_tokens) : '\u2014';
-        var ttft = m.ttft_ms != null ? formatMs(m.ttft_ms) : '\u2014';
-        var duration = m.total_duration_ms != null ? formatMs(m.total_duration_ms) : '\u2014';
-        var ctxUsed = m.context_used != null ? m.context_used : (m.input_tokens || 0) + (m.output_tokens || 0);
-        var ctxMax = m.context_window || getContextWindow();
-        var ctxPct = ctxMax ? Math.min(100, (ctxUsed / ctxMax) * 100) : 0;
-        set('metricGenTs', genTs === '\u2014' ? '\u2014' : genTs + ' t/s');
-        set('metricPromptTs', promptTs === '\u2014' ? '\u2014' : promptTs + ' t/s');
-        set('metricInputTok', inputTok);
-        set('metricOutputTok', outputTok);
-        set('metricTtft', ttft);
-        set('metricDuration', duration);
-        set('metricContext', Number(ctxUsed).toLocaleString() + ' / ' + Number(ctxMax).toLocaleString() + ' (' + ctxPct.toFixed(1) + '%)');
-        set('metricsSummary', genTs !== '\u2014' ? genTs + ' t/s \u00b7 ' + outputTok + ' tok \u00b7 ' + duration : '\u2014');
-        var chat = getActiveChat();
-        if (chat) {
-          var totalIn = 0;
-          var totalOut = 0;
-          chat.messages.forEach(function(msg) {
-            if (msg._inTokens) totalIn += Number(msg._inTokens);
-            if (msg._outTokens) totalOut += Number(msg._outTokens);
-          });
-          set('metricChatTotal', totalIn ? (Number(totalIn).toLocaleString() + ' in / ' + Number(totalOut).toLocaleString() + ' out') : '\u2014');
-        }
-        var fill = $('contextBarFill');
-        if (fill) fill.style.width = ctxPct + '%';
+      var DASH = '\u2014';
+
+      function fmtInt(n) {
+        return Number(n).toLocaleString();
       }
 
+      // Durations here span four orders of magnitude, so a single format is
+      // either unreadable at the top or falsely precise at the bottom.
       function formatMs(ms) {
         var n = Number(ms);
-        if (Number.isNaN(n)) return '\u2014';
+        if (ms == null || Number.isNaN(n)) return DASH;
         if (n < 1000) return Math.round(n) + ' ms';
-        return (n / 1000).toFixed(2) + ' s';
+        if (n < 10000) return (n / 1000).toFixed(2) + ' s';
+        if (n < 60000) return (n / 1000).toFixed(1) + ' s';
+        var mins = Math.floor(n / 60000);
+        var secs = Math.round((n % 60000) / 1000);
+        if (secs === 60) { mins += 1; secs = 0; }
+        return mins + 'm ' + (secs < 10 ? '0' : '') + secs + 's';
+      }
+
+      function formatRate(v) {
+        var n = Number(v);
+        if (v == null || !Number.isFinite(n)) return DASH;
+        if (n >= 1000) return fmtInt(Math.round(n));
+        if (n >= 100) return n.toFixed(0);
+        if (n >= 10) return n.toFixed(1);
+        return n.toFixed(2);
+      }
+
+      // The wall clock of a reply, split into the four things it is actually
+      // spent on. Kept in one place so the bar, the legend and the derived
+      // rates can never disagree about where a millisecond belongs.
+      function metricPhases(m) {
+        var total = m.total_duration_ms != null ? Number(m.total_duration_ms) : null;
+        if (total == null || !(total > 0)) return null;
+        var wait = m.prefill_ms != null ? Math.max(0, Number(m.prefill_ms))
+          : (m.ttft_ms != null ? Math.max(0, Number(m.ttft_ms)) : 0);
+        var think = m.think_ms != null ? Math.max(0, Number(m.think_ms)) : 0;
+        var tool = m.tool_ms != null ? Math.max(0, Number(m.tool_ms)) : 0;
+        var head = wait + think + tool;
+        if (head > total) {
+          // A clamp, not a fix: only reachable when a server-reported timing
+          // disagrees with the locally measured wall clock.
+          var scale = total / head;
+          wait *= scale; think *= scale; tool *= scale;
+        }
+        return { total: total, wait: wait, think: think, tool: tool, gen: Math.max(0, total - wait - think - tool) };
+      }
+
+      function metricCell(opts) {
+        var cell = document.createElement('div');
+        cell.className = 'metric-cell' + (opts.wide ? ' wide' : '');
+        if (opts.title) cell.title = opts.title;
+        var label = document.createElement('div');
+        label.className = 'metric-label';
+        label.textContent = opts.label;
+        cell.appendChild(label);
+        if (opts.value) {
+          var value = document.createElement('div');
+          value.className = 'metric-value' + (opts.accent ? ' accent' : '') + (opts.estimated ? ' estimated' : '');
+          value.textContent = opts.value;
+          cell.appendChild(value);
+        }
+        if (opts.extra) cell.appendChild(opts.extra);
+        if (opts.sub) {
+          var sub = document.createElement('div');
+          sub.className = 'metric-sub';
+          sub.textContent = opts.sub;
+          cell.appendChild(sub);
+        }
+        return cell;
+      }
+
+      // Below these the measurement is noise, not a fast model.
+      var MIN_RATE_WINDOW_MS = 50;
+      var MIN_PREFILL_WINDOW_MS = 20;
+
+      var PHASE_ORDER = [
+        { key: 'wait', cls: 'wait', label: 'prefill' },
+        { key: 'think', cls: 'think', label: 'reasoning' },
+        { key: 'gen', cls: 'gen', label: 'answer' },
+        { key: 'tool', cls: 'tool', label: 'tools' },
+      ];
+
+      function phaseElements(phases) {
+        var frag = document.createDocumentFragment();
+        var bar = document.createElement('div');
+        bar.className = 'phase-bar';
+        var legend = document.createElement('div');
+        legend.className = 'phase-legend';
+        PHASE_ORDER.forEach(function(p) {
+          var ms = phases[p.key];
+          // A phase that took no time earns neither a pixel nor a legend entry,
+          // so a plain chat turn degenerates to prefill + answer.
+          if (!(ms > 0)) return;
+          var seg = document.createElement('div');
+          seg.className = 'phase-seg ' + p.cls;
+          seg.style.width = ((ms / phases.total) * 100) + '%';
+          seg.title = p.label + ' ' + formatMs(ms);
+          bar.appendChild(seg);
+          var item = document.createElement('span');
+          var dot = document.createElement('i');
+          dot.className = p.cls;
+          item.appendChild(dot);
+          item.appendChild(document.createTextNode(p.label + ' ' + formatMs(ms)));
+          legend.appendChild(item);
+        });
+        frag.appendChild(bar);
+        frag.appendChild(legend);
+        return frag;
+      }
+
+      function contextBarEl(pct) {
+        var bar = document.createElement('div');
+        bar.className = 'context-bar';
+        var fill = document.createElement('div');
+        fill.className = 'context-bar-fill';
+        fill.style.width = pct + '%';
+        bar.appendChild(fill);
+        return bar;
+      }
+
+      // Only the reasons worth interrupting the reader for. end_turn and
+      // tool_use are the normal endings and say nothing useful.
+      var STOP_REASON_TEXT = {
+        max_tokens: 'truncated \u2014 hit the output cap',
+        content_filter: 'stopped by a content filter',
+        stop_sequence: 'hit a stop sequence',
+        error: 'the provider ended the turn on an error',
+      };
+
+      function chatTokenTotals(chat) {
+        var out = { input: 0, output: 0, cached: 0, replies: 0, estimated: false };
+        if (!chat) return out;
+        chat.messages.forEach(function(msg) {
+          if (msg.role !== 'assistant') return;
+          var mm = msg._metrics;
+          var inTok = mm && mm.input_tokens != null ? mm.input_tokens : msg._inTokens;
+          var outTok = mm && mm.output_tokens != null ? mm.output_tokens : msg._outTokens;
+          if (inTok == null && outTok == null) return;
+          out.input += Number(inTok) || 0;
+          out.output += Number(outTok) || 0;
+          if (mm && mm.cached_tokens) out.cached += Number(mm.cached_tokens) || 0;
+          if (!mm || mm.tokens_estimated) out.estimated = true;
+          out.replies++;
+        });
+        return out;
+      }
+
+      // The bar describes the reply you are looking at, which after a branch
+      // cycle is not the one that was generated last.
+      function chatDisplayMetrics(chat) {
+        if (!chat) return null;
+        for (var i = chat.messages.length - 1; i >= 0; i--) {
+          var msg = chat.messages[i];
+          if (msg.role === 'assistant' && msg._metrics) return msg._metrics;
+        }
+        return chat.metrics || null;
+      }
+
+      function updateMetrics(m) {
+        var grid = $('metricsGrid');
+        var foot = $('metricsFoot');
+        var summaryEl = $('metricsSummary');
+        if (!grid) return;
+        grid.innerHTML = '';
+        if (foot) { foot.innerHTML = ''; foot.style.display = 'none'; }
+        if (metricsRow) metricsRow.classList.toggle('live', !!(m && m.live));
+
+        if (!m) {
+          if (summaryEl) summaryEl.textContent = DASH;
+          return;
+        }
+
+        var est = !!m.tokens_estimated;
+        var tilde = est ? '~' : '';
+        var phases = metricPhases(m);
+        var fromServer = m.rate_source === 'server';
+        var rateNote = fromServer ? 'from ' + (m.rate_engine || 'the server') : 'measured in-browser';
+
+        // --- speed ---------------------------------------------------------
+        var genTs = m.generation_tokens_per_second;
+        if (genTs != null) {
+          grid.appendChild(metricCell({
+            label: 'Gen t/s',
+            value: (fromServer ? '' : tilde) + formatRate(genTs) + ' t/s',
+            accent: true,
+            estimated: est && !fromServer,
+            sub: fromServer ? rateNote : (phases ? 'over ' + formatMs(phases.think + phases.gen) : rateNote),
+            title: 'Output tokens divided by the time actually spent generating. Prefill, reasoning-before-first-token and tool execution are all outside this window.',
+          }));
+        }
+        var promptTs = m.prompt_tokens_per_second;
+        if (promptTs != null) {
+          grid.appendChild(metricCell({
+            label: 'Prefill t/s',
+            value: (fromServer ? '' : tilde) + formatRate(promptTs) + ' t/s',
+            estimated: est && !fromServer,
+            sub: fromServer ? rateNote : 'upper bound',
+            title: fromServer
+              ? 'Prompt tokens divided by the prompt-eval time the server reported.'
+              : 'Prompt tokens divided by time-to-first-token. An upper bound only: queueing and network latency sit inside that window.',
+          }));
+        }
+
+        // --- latency -------------------------------------------------------
+        if (m.ttft_ms != null) {
+          grid.appendChild(metricCell({
+            label: 'TTFT',
+            value: formatMs(m.ttft_ms),
+            sub: m.think_ms > 0 ? '+' + formatMs(m.think_ms) + ' to answer' : '',
+            title: 'Request sent \u2192 first token of any kind, reasoning included.',
+          }));
+        }
+        if (m.total_duration_ms != null) {
+          var durSub = [];
+          if (m.turns > 1) durSub.push(m.turns + ' turns');
+          if (m.tool_calls) durSub.push(m.tool_calls + ' tool call' + (m.tool_calls !== 1 ? 's' : ''));
+          grid.appendChild(metricCell({
+            label: 'Total',
+            value: formatMs(m.total_duration_ms),
+            sub: durSub.join(' \u00b7 '),
+            title: 'Wall time for the whole reply, from request sent to stream close.',
+          }));
+        }
+        if (phases) {
+          grid.appendChild(metricCell({
+            label: 'Time breakdown',
+            wide: true,
+            extra: phaseElements(phases),
+            title: 'Where the wall clock went.',
+          }));
+        }
+
+        // --- tokens --------------------------------------------------------
+        var inputTok = m.input_tokens != null ? Number(m.input_tokens) : null;
+        var outputTok = m.output_tokens != null ? Number(m.output_tokens) : null;
+        if (inputTok != null) {
+          var inSub = [];
+          if (m.cached_tokens) inSub.push(fmtInt(m.cached_tokens) + ' cached');
+          if (m.cache_write_tokens) inSub.push(fmtInt(m.cache_write_tokens) + ' written');
+          if (m.turns > 1) inSub.push('over ' + m.turns + ' turns');
+          grid.appendChild(metricCell({
+            label: 'Input',
+            value: tilde + fmtInt(inputTok),
+            estimated: est,
+            sub: inSub.join(' \u00b7 '),
+            title: 'Prompt tokens billed for this reply, summed across every turn it took.',
+          }));
+        }
+        if (outputTok != null) {
+          var outSub = [];
+          if (m.reasoning_tokens) {
+            outSub.push(fmtInt(m.reasoning_tokens) + ' reasoning');
+            outSub.push(fmtInt(Math.max(0, outputTok - m.reasoning_tokens)) + ' visible');
+          }
+          grid.appendChild(metricCell({
+            label: 'Output',
+            value: tilde + fmtInt(outputTok),
+            estimated: est,
+            sub: outSub.join(' \u00b7 '),
+            title: 'Completion tokens billed for this reply, reasoning included.',
+          }));
+        }
+
+        // --- context -------------------------------------------------------
+        var ctxMax = Number(m.context_window || getContextWindow()) || 0;
+        var ctxUsed = m.context_used != null ? Number(m.context_used) : null;
+        if (ctxUsed != null && ctxMax > 0) {
+          var ctxPct = Math.min(100, (ctxUsed / ctxMax) * 100);
+          grid.appendChild(metricCell({
+            label: 'Context usage',
+            value: tilde + fmtInt(ctxUsed) + ' / ' + fmtInt(ctxMax) + ' (' + ctxPct.toFixed(1) + '%)',
+            estimated: est,
+            wide: true,
+            extra: contextBarEl(ctxPct),
+            sub: fmtInt(Math.max(0, ctxMax - ctxUsed)) + ' left',
+            title: 'What the next request will carry \u2014 the last turn only, not the sum of everything billed.',
+          }));
+        }
+
+        // --- chat totals ---------------------------------------------------
+        var totals = chatTokenTotals(getActiveChat());
+        if (totals.replies) {
+          var totalSub = fmtInt(totals.input + totals.output) + ' across ' + totals.replies + ' repl' + (totals.replies !== 1 ? 'ies' : 'y');
+          if (totals.cached) totalSub += ' \u00b7 ' + fmtInt(totals.cached) + ' cached';
+          grid.appendChild(metricCell({
+            label: 'Billed this chat',
+            value: (totals.estimated ? '~' : '') + fmtInt(totals.input) + ' in / ' + fmtInt(totals.output) + ' out',
+            estimated: totals.estimated,
+            wide: true,
+            sub: totalSub,
+            title: 'Every turn re-sends the whole conversation, so this grows faster than the conversation does. It is a billing figure, not a measure of chat length.',
+          }));
+        }
+
+        // --- provenance ----------------------------------------------------
+        if (foot) {
+          var notes = [];
+          if (m.partial) notes.push({ text: 'partial \u2014 the reply did not finish', warn: true });
+          var stopNote = STOP_REASON_TEXT[m.stop_reason];
+          if (stopNote) notes.push({ text: stopNote, warn: m.stop_reason !== 'stop_sequence' });
+          if (m.rate_unmeasurable) notes.push({ text: 'arrived too fast to time a generation rate', warn: false });
+          notes.push({ text: est ? 'counts estimated from text length' : 'counts reported by the provider', warn: false });
+          if (m.rate_engine) notes.push({ text: 'timings from ' + m.rate_engine, warn: false });
+          foot.style.display = '';
+          notes.forEach(function(n) {
+            var s = document.createElement('span');
+            if (n.warn) s.className = 'warn';
+            s.textContent = n.text;
+            foot.appendChild(s);
+          });
+        }
+
+        // --- collapsed summary ---------------------------------------------
+        if (summaryEl) {
+          var summary = [];
+          if (genTs != null) summary.push((fromServer ? '' : tilde) + formatRate(genTs) + ' t/s');
+          if (outputTok != null) summary.push(tilde + fmtInt(outputTok) + ' tok');
+          if (m.ttft_ms != null) summary.push(formatMs(m.ttft_ms) + ' ttft');
+          if (m.total_duration_ms != null) summary.push(formatMs(m.total_duration_ms));
+          summaryEl.innerHTML = '';
+          if (!summary.length) {
+            summaryEl.textContent = DASH;
+          } else {
+            summaryEl.appendChild(document.createTextNode(summary.join(' \u00b7 ')));
+            if (m.partial || m.stop_reason === 'max_tokens') {
+              var warn = document.createElement('span');
+              warn.className = 'warn';
+              warn.textContent = ' \u00b7 ' + (m.partial ? 'incomplete' : 'truncated');
+              summaryEl.appendChild(warn);
+            }
+          }
+        }
       }
 
       function placeComposer() {
@@ -6581,18 +6934,207 @@
           requestBody.baseURL = settings.customBaseURL || '';
         }
 
-        var streamStart = performance.now();
-        var firstTokenAt = null;
+        var runStart = performance.now();
+        // One record per request/response turn. An agent reply is many turns, and
+        // collapsing them into a single set of counters is what made agent runs
+        // report the last step's tokens over the whole run's wall clock.
+        var turnRecords = [];
         var localMetrics = {
+          turns: 0,
           input_tokens: null,
           output_tokens: null,
+          cached_tokens: null,
+          cache_write_tokens: null,
+          reasoning_tokens: null,
           generation_tokens_per_second: null,
           prompt_tokens_per_second: null,
+          rate_source: null,
+          rate_engine: null,
           ttft_ms: null,
+          think_ms: null,
+          prefill_ms: null,
+          tool_ms: 0,
+          tool_calls: 0,
           total_duration_ms: null,
+          stop_reason: null,
+          rate_unmeasurable: false,
           context_used: null,
           context_window: getContextWindow(),
+          tokens_estimated: false,
+          partial: false,
         };
+
+        function newTurn() {
+          var t = {
+            start_ms: performance.now(),
+            first_token_ms: null,
+            first_visible_ms: null,
+            end_ms: null,
+            delta_count: 0,
+            prompt_tokens: null,
+            completion_tokens: null,
+            cached_tokens: null,
+            cache_write_tokens: null,
+            reasoning_tokens: null,
+            server: null,
+          };
+          turnRecords.push(t);
+          return t;
+        }
+
+        // TTFT counts the first token of any kind. A reasoning model that thinks
+        // for ten seconds before speaking was not fast, and measuring from the
+        // first visible token would report it as such.
+        function markToken(turn, visible) {
+          var now = performance.now();
+          if (turn.first_token_ms == null) turn.first_token_ms = now;
+          if (visible) {
+            if (turn.first_visible_ms == null) turn.first_visible_ms = now;
+            turn.delta_count++;
+          }
+        }
+
+        // An image part is worth hundreds of tokens, not the two dozen characters
+        // approxContentLength scores it as. When one is present and the provider
+        // told us nothing, no input number is better than a wrong one.
+        function promptHasImages(msgs) {
+          for (var i = 0; i < msgs.length; i++) {
+            var c = msgs[i].content;
+            if (!Array.isArray(c)) continue;
+            for (var j = 0; j < c.length; j++) {
+              if (c[j] && typeof c[j].text !== 'string') return true;
+            }
+          }
+          return false;
+        }
+
+        // Turns the per-turn records into the numbers the bar shows. Called on
+        // both the success and the failure path so that a partial reply reports
+        // what it actually cost.
+        function finalizeMetrics(partial) {
+          var m = localMetrics;
+          var now = performance.now();
+          m.partial = !!partial;
+          m.turns = turnRecords.length;
+          m.total_duration_ms = now - runStart;
+
+          var first = turnRecords[0];
+          if (first && first.first_token_ms != null) {
+            m.ttft_ms = first.first_token_ms - first.start_ms;
+            if (first.first_visible_ms != null && first.first_visible_ms > first.first_token_ms) {
+              m.think_ms = first.first_visible_ms - first.first_token_ms;
+            }
+          }
+
+          var inSum = 0, outSum = 0, cachedSum = 0, writeSum = 0, reasonSum = 0;
+          var sawIn = false, sawOut = false;
+          var prefillMs = 0, genMs = 0, deltaCount = 0;
+          var srvPromptMs = 0, srvGenMs = 0, srvPromptTok = 0, srvGenTok = 0;
+          var srvEngine = null;
+          var srvEveryTurn = turnRecords.length > 0;
+
+          turnRecords.forEach(function(t) {
+            if (t.prompt_tokens != null) { inSum += Number(t.prompt_tokens) || 0; sawIn = true; }
+            if (t.completion_tokens != null) { outSum += Number(t.completion_tokens) || 0; sawOut = true; }
+            cachedSum += Number(t.cached_tokens) || 0;
+            writeSum += Number(t.cache_write_tokens) || 0;
+            reasonSum += Number(t.reasoning_tokens) || 0;
+
+            deltaCount += t.delta_count;
+            var end = t.end_ms != null ? t.end_ms : now;
+            if (t.first_token_ms != null) {
+              prefillMs += Math.max(0, t.first_token_ms - t.start_ms);
+              genMs += Math.max(0, end - t.first_token_ms);
+            } else {
+              // No token ever arrived on this turn; all of it was waiting.
+              prefillMs += Math.max(0, end - t.start_ms);
+            }
+
+            if (t.server) {
+              srvEngine = t.server.source;
+              srvPromptMs += Number(t.server.prompt_ms) || 0;
+              srvGenMs += Number(t.server.gen_ms) || 0;
+              srvPromptTok += Number(t.server.prompt_tokens) || 0;
+              srvGenTok += Number(t.server.completion_tokens) || 0;
+            } else {
+              srvEveryTurn = false;
+            }
+          });
+
+          m.prefill_ms = prefillMs;
+          m.cached_tokens = cachedSum || null;
+          m.cache_write_tokens = writeSum || null;
+          m.reasoning_tokens = reasonSum || null;
+
+          // A server counting its own tokens beats anything measured out here.
+          if (srvEveryTurn && srvGenTok > 0) { outSum = srvGenTok; sawOut = true; }
+          if (srvEveryTurn && srvPromptTok > 0) { inSum = srvPromptTok; sawIn = true; }
+
+          var estimated = false;
+          if (!sawOut) {
+            var producedChars = (assistantMsg.content || '').length + (assistantMsg.thinking || '').length;
+            if (assistantMsg._steps) {
+              assistantMsg._steps.forEach(function(s) { producedChars += (s.text || '').length; });
+            }
+            outSum = producedChars ? Math.max(1, Math.round(producedChars / 3.5)) : null;
+            estimated = true;
+          }
+          if (!sawIn) {
+            if (promptHasImages(requestBody.messages)) {
+              inSum = null;
+            } else {
+              // Content is null on an assistant tool-call turn and an array on a
+              // multimodal one, so this cannot assume a string.
+              var promptChars = requestBody.messages.reduce(function(sum, msg) { return sum + approxContentLength(msg.content); }, 0);
+              inSum = Math.max(1, Math.round(promptChars / 3.5));
+            }
+            estimated = true;
+          }
+          m.tokens_estimated = estimated;
+          m.input_tokens = inSum;
+          m.output_tokens = outSum;
+
+          // Billed is the sum over every turn; context is only ever what the next
+          // request will carry, which is the last turn alone. Conflating the two
+          // is what made agent runs report nonsense.
+          var last = turnRecords[turnRecords.length - 1];
+          if (last && last.prompt_tokens != null) {
+            m.context_used = Number(last.prompt_tokens) + (Number(last.completion_tokens) || 0);
+          } else {
+            m.context_used = (inSum || 0) + (outSum || 0);
+          }
+
+          if (srvEveryTurn && srvGenMs > 0 && srvGenTok > 0) {
+            m.generation_tokens_per_second = (srvGenTok / srvGenMs) * 1000;
+            m.rate_source = 'server';
+            m.rate_engine = srvEngine;
+          } else if (outSum > 0 && deltaCount >= 2 && genMs >= MIN_RATE_WINDOW_MS) {
+            m.generation_tokens_per_second = (outSum / genMs) * 1000;
+            m.rate_source = 'client';
+          } else if (outSum > 0) {
+            // A reply that arrived in one chunk, or faster than the clock can
+            // resolve, has no generation window. Reporting tokens over ~2ms
+            // produces six-figure rates that are pure noise.
+            m.rate_unmeasurable = true;
+          }
+          if (srvEveryTurn && srvPromptMs > 0 && srvPromptTok > 0) {
+            m.prompt_tokens_per_second = (srvPromptTok / srvPromptMs) * 1000;
+            m.rate_source = 'server';
+            m.rate_engine = srvEngine;
+          } else if (inSum > 0 && prefillMs >= MIN_PREFILL_WINDOW_MS) {
+            m.prompt_tokens_per_second = (inSum / prefillMs) * 1000;
+          }
+          return m;
+        }
+
+        // Metrics belong to the message that produced them, so branching and
+        // regenerating cannot leave another reply's numbers on screen.
+        function attachMetrics() {
+          assistantMsg._metrics = localMetrics;
+          assistantMsg._inTokens = localMetrics.input_tokens;
+          assistantMsg._outTokens = localMetrics.output_tokens;
+          chat.metrics = localMetrics;
+        }
 
         var endpoint = settings.apiEndpoint.replace(/\/+$/, '');
 
@@ -6600,6 +7142,7 @@
         // asked for, if any. Deliberately does NOT call finishStreamingUI: that
         // strips the live thinking row, which must survive between iterations.
         async function runOneTurn(reqBody) {
+          var turn = newTurn();
           var pendingTools = {};
           var toolOrder = [];
           // Models that opened reasoning implicitly before are trusted to do it
@@ -6681,7 +7224,7 @@
               try { event = JSON.parse(payload); }
               catch (_) {
                 if (payload) {
-                  if (firstTokenAt == null) firstTokenAt = performance.now();
+                  markToken(turn, true);
                   applyVisibleDelta(payload);
                 }
                 continue;
@@ -6690,6 +7233,9 @@
               var delta = event.delta != null ? event.delta : event.content != null ? event.content : event.token != null ? event.token : event.text != null ? event.text : '';
               var thinkingDelta = event.thinking_delta != null ? event.thinking_delta : event.thinking != null ? event.thinking : event.reasoning != null ? event.reasoning : null;
 
+              // Marked before the settings gate: the token arrived whether or not
+              // the user asked to see reasoning.
+              if (thinkingDelta && typeof thinkingDelta === 'string') markToken(turn, false);
               if (thinkingDelta && settings.thinking && typeof thinkingDelta === 'string') {
                 assistantMsg.thinking = (assistantMsg.thinking || '') + thinkingDelta;
                 if (isActive()) updateLastAssistantMessage(assistantMsg);
@@ -6697,7 +7243,7 @@
               if (event.thinking_done || event.thinking_complete) { assistantMsg.thinkingComplete = true; }
 
               if (delta) {
-                if (firstTokenAt == null) { firstTokenAt = performance.now(); localMetrics.ttft_ms = firstTokenAt - streamStart; }
+                markToken(turn, true);
                 applyVisibleDelta(delta);
               }
 
@@ -6717,19 +7263,21 @@
                 pendingTools[event.tool_args.i].argsText += event.tool_args.d || '';
               }
 
+              // Usage lands on this turn, never on a shared total: providers send
+              // it more than once per turn and the counts are cumulative-final,
+              // so last-write-wins is right per turn and wrong across turns.
               if (event.usage) {
-                localMetrics.input_tokens = event.usage.prompt_tokens != null ? event.usage.prompt_tokens : event.usage.input_tokens != null ? event.usage.input_tokens : localMetrics.input_tokens;
-                localMetrics.output_tokens = event.usage.completion_tokens != null ? event.usage.completion_tokens : event.usage.output_tokens != null ? event.usage.output_tokens : localMetrics.output_tokens;
-                localMetrics.context_used = (localMetrics.input_tokens || 0) + (localMetrics.output_tokens || 0);
+                var u = event.usage;
+                if (u.prompt_tokens != null) turn.prompt_tokens = u.prompt_tokens;
+                else if (u.input_tokens != null) turn.prompt_tokens = u.input_tokens;
+                if (u.completion_tokens != null) turn.completion_tokens = u.completion_tokens;
+                else if (u.output_tokens != null) turn.completion_tokens = u.output_tokens;
+                if (u.cached_tokens != null) turn.cached_tokens = u.cached_tokens;
+                if (u.cache_write_tokens != null) turn.cache_write_tokens = u.cache_write_tokens;
+                if (u.reasoning_tokens != null) turn.reasoning_tokens = u.reasoning_tokens;
               }
-
-              ['generation_tokens_per_second','prompt_tokens_per_second','input_tokens','output_tokens','ttft_ms','ttft','total_duration_ms','total_duration','context_used'].forEach(function(k) {
-                if (event[k] != null) {
-                  if (k === 'ttft') localMetrics.ttft_ms = event[k];
-                  else if (k === 'total_duration') localMetrics.total_duration_ms = event[k];
-                  else localMetrics[k] = event[k];
-                }
-              });
+              if (event.server_timing) turn.server = event.server_timing;
+              if (event.stop_reason) localMetrics.stop_reason = event.stop_reason;
 
               if (event.search) {
                 assistantMsg._search = event.search;
@@ -6765,6 +7313,7 @@
             if (tail.text) assistantMsg.content += tail.text;
           }
           if (isActive()) updateLastAssistantMessage(assistantMsg);
+          turn.end_ms = performance.now();
 
           return toolOrder.map(function(k) {
             var t = pendingTools[k];
@@ -6799,7 +7348,10 @@
                   var runLabel = messagesEl.querySelector('.thinking-label');
                   if (runLabel) runLabel.textContent = 'Running ' + call.name + '…';
                 }
+                var toolStart = performance.now();
                 var out = await executeToolCall(chat.id, call, streamControllers[chat.id] ? streamControllers[chat.id].signal : undefined);
+                localMetrics.tool_ms += performance.now() - toolStart;
+                localMetrics.tool_calls++;
                 results.push({ id: call.id, name: call.name, content: out });
                 if (streamControllers[chat.id] && streamControllers[chat.id].signal.aborted) break;
               }
@@ -6822,37 +7374,11 @@
             step++;
           }
 
-          var streamEnd = performance.now();
-          var genTimeMs = streamEnd - streamStart;
-          localMetrics.total_duration_ms = genTimeMs;
-          if (firstTokenAt != null) {
-            localMetrics.ttft_ms = firstTokenAt - streamStart;
-          }
-
-          if (localMetrics.output_tokens == null && assistantMsg.content) {
-            localMetrics.output_tokens = Math.max(1, Math.round(assistantMsg.content.length / 3.5));
-          }
-          if (localMetrics.input_tokens == null) {
-            // Content is null on an assistant tool-call turn and an array on a
-            // multimodal one, so this cannot assume a string.
-            var promptChars = requestBody.messages.reduce(function(sum, m) { return sum + approxContentLength(m.content); }, 0);
-            localMetrics.input_tokens = Math.max(1, Math.round(promptChars / 3.5));
-          }
-          if (localMetrics.output_tokens && localMetrics.ttft_ms != null) {
-            var genMs = genTimeMs - localMetrics.ttft_ms;
-            if (genMs <= 0) genMs = 1;
-            localMetrics.generation_tokens_per_second = (localMetrics.output_tokens / genMs) * 1000;
-          }
-          if (localMetrics.context_used == null) {
-            localMetrics.context_used = (localMetrics.input_tokens || 0) + (localMetrics.output_tokens || 0);
-          }
-
+          finalizeMetrics(false);
           assistantMsg.thinkingComplete = true;
           if (!assistantMsg.content && !(assistantMsg._steps && assistantMsg._steps.length)) assistantMsg.content = '(No response received)';
 
-          chat.metrics = localMetrics;
-          assistantMsg._inTokens = localMetrics.input_tokens;
-          assistantMsg._outTokens = localMetrics.output_tokens;
+          attachMetrics();
           if (!chat.incognito) persistChats(chat);
           if (isActive()) {
             finishStreamingUI();
@@ -6869,8 +7395,13 @@
             if (isActive()) showToast(err.message || 'Failed to reach endpoint');
           }
           assistantMsg.thinkingComplete = true;
+          // A reply that died halfway still cost something. Without this the bar
+          // keeps showing the previous reply's numbers as if they were this one's.
+          finalizeMetrics(true);
+          attachMetrics();
           if (isActive()) {
             finishStreamingUI();
+            updateMetrics(localMetrics);
             updateLastAssistantMessage(assistantMsg);
             finishStreamingUI();
           }

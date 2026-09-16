@@ -126,6 +126,11 @@ function buildOpenAIRequest(model, messages, temperature, maxTokens, effort, too
     model,
     messages,
     stream: true,
+    // Without this a strict OpenAI-compatible endpoint reports no usage at all
+    // while streaming, and the client silently falls back to counting
+    // characters. Estimated tokens that look like real ones are worse than no
+    // number, so ask for the real ones everywhere.
+    stream_options: { include_usage: true },
   };
   if (isOModel) {
     body.max_completion_tokens = maxTokens;
@@ -347,6 +352,118 @@ function buildGoogleRequest(model, messages, temperature, maxTokens, effortBudge
   return body;
 }
 
+const NS_PER_MS = 1e6;
+
+function finiteNum(v) {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function tokensPerSecond(tokens, ms) {
+  if (tokens == null || ms == null || !(ms > 0)) return null;
+  return (tokens / ms) * 1000;
+}
+
+// Several OpenAI-compatible backends report their own prompt-eval and generation
+// timings on the final chunk. Those are measured inside the server, so unlike
+// anything the browser can observe they exclude the network hop and the Worker.
+// All three shapes ride the same code path, so one parser covers them.
+function parseServerTiming(parsed) {
+  // llama.cpp / llama-cpp-python — milliseconds.
+  const t = parsed.timings;
+  if (t && typeof t === 'object') {
+    const promptMs = finiteNum(t.prompt_ms);
+    const genMs = finiteNum(t.predicted_ms);
+    const promptN = finiteNum(t.prompt_n);
+    const genN = finiteNum(t.predicted_n);
+    return {
+      source: 'llama.cpp',
+      prompt_tokens: promptN,
+      completion_tokens: genN,
+      prompt_ms: promptMs,
+      gen_ms: genMs,
+      queue_ms: null,
+      prompt_tps: finiteNum(t.prompt_per_second) ?? tokensPerSecond(promptN, promptMs),
+      gen_tps: finiteNum(t.predicted_per_second) ?? tokensPerSecond(genN, genMs),
+    };
+  }
+
+  // Groq — seconds.
+  const g = parsed.x_groq && parsed.x_groq.usage;
+  if (g && typeof g === 'object') {
+    const promptSec = finiteNum(g.prompt_time);
+    const genSec = finiteNum(g.completion_time);
+    const queueSec = finiteNum(g.queue_time);
+    const promptMs = promptSec == null ? null : promptSec * 1000;
+    const genMs = genSec == null ? null : genSec * 1000;
+    const promptN = finiteNum(g.prompt_tokens);
+    const genN = finiteNum(g.completion_tokens);
+    return {
+      source: 'groq',
+      prompt_tokens: promptN,
+      completion_tokens: genN,
+      prompt_ms: promptMs,
+      gen_ms: genMs,
+      queue_ms: queueSec == null ? null : queueSec * 1000,
+      prompt_tps: tokensPerSecond(promptN, promptMs),
+      gen_tps: tokensPerSecond(genN, genMs),
+    };
+  }
+
+  // Ollama — nanoseconds.
+  const evalNs = finiteNum(parsed.eval_duration);
+  const promptNs = finiteNum(parsed.prompt_eval_duration);
+  if (evalNs != null || promptNs != null) {
+    const promptMs = promptNs == null ? null : promptNs / NS_PER_MS;
+    const genMs = evalNs == null ? null : evalNs / NS_PER_MS;
+    const promptN = finiteNum(parsed.prompt_eval_count);
+    const genN = finiteNum(parsed.eval_count);
+    const loadNs = finiteNum(parsed.load_duration);
+    return {
+      source: 'ollama',
+      prompt_tokens: promptN,
+      completion_tokens: genN,
+      prompt_ms: promptMs,
+      gen_ms: genMs,
+      queue_ms: loadNs == null ? null : loadNs / NS_PER_MS,
+      prompt_tps: tokensPerSecond(promptN, promptMs),
+      gen_tps: tokensPerSecond(genN, genMs),
+    };
+  }
+
+  return null;
+}
+
+// Each protocol has its own vocabulary for why generation ended, and the client
+// needs one. "Finished" and "ran out of output budget" look identical today.
+const STOP_REASON_MAP = {
+  stop: 'end_turn',
+  end_turn: 'end_turn',
+  STOP: 'end_turn',
+  length: 'max_tokens',
+  max_tokens: 'max_tokens',
+  MAX_TOKENS: 'max_tokens',
+  tool_calls: 'tool_use',
+  function_call: 'tool_use',
+  tool_use: 'tool_use',
+  stop_sequence: 'stop_sequence',
+  content_filter: 'content_filter',
+  refusal: 'content_filter',
+  SAFETY: 'content_filter',
+  RECITATION: 'content_filter',
+  PROHIBITED_CONTENT: 'content_filter',
+  BLOCKLIST: 'content_filter',
+  SPII: 'content_filter',
+  IMAGE_SAFETY: 'content_filter',
+  pause_turn: 'pause_turn',
+  MALFORMED_FUNCTION_CALL: 'error',
+  OTHER: 'error',
+};
+
+function normalizeStopReason(raw) {
+  if (!raw) return null;
+  return STOP_REASON_MAP[raw] || String(raw).toLowerCase();
+}
+
 async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer, collectCitations) {
   const response = await fetch(url, {
     method: 'POST',
@@ -454,15 +571,29 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer,
         await closeOpenSlots();
         await sendToolStop();
       }
+      if (finish) {
+        await writer.write(encoder.encode(JSON.stringify({ stop_reason: normalizeStopReason(finish) }) + '\n'));
+      }
     }
     if (parsed.usage) {
+      // The detail objects are what make the headline counts interpretable: a
+      // cached prefill is not the same work as a cold one, and reasoning tokens
+      // bill as output while never appearing in the visible answer.
+      const promptDetail = parsed.usage.prompt_tokens_details || {};
+      const completionDetail = parsed.usage.completion_tokens_details || {};
       await writer.write(encoder.encode(JSON.stringify({
         usage: {
           prompt_tokens: parsed.usage.prompt_tokens,
           completion_tokens: parsed.usage.completion_tokens,
           total_tokens: parsed.usage.total_tokens,
+          cached_tokens: promptDetail.cached_tokens,
+          reasoning_tokens: completionDetail.reasoning_tokens,
         }
       }) + '\n'));
+    }
+    const serverTiming = parseServerTiming(parsed);
+    if (serverTiming) {
+      await writer.write(encoder.encode(JSON.stringify({ server_timing: serverTiming }) + '\n'));
     }
   };
 
@@ -546,7 +677,21 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
         const parsed = JSON.parse(data);
         const type = parsed.type || '';
 
-        if (type === 'content_block_start' && parsed.content_block && parsed.content_block.type === 'web_search_tool_result') {
+        if (type === 'message_start') {
+          // Anthropic reports input on message_start and output on message_delta,
+          // and the message_delta copy of input_tokens is routinely absent. Only
+          // the second was forwarded, so the input count could vanish entirely.
+          const startUsage = parsed.message?.usage;
+          if (startUsage) {
+            await writer.write(encoder.encode(JSON.stringify({
+              usage: {
+                prompt_tokens: startUsage.input_tokens,
+                cached_tokens: startUsage.cache_read_input_tokens,
+                cache_write_tokens: startUsage.cache_creation_input_tokens,
+              }
+            }) + '\n'));
+          }
+        } else if (type === 'content_block_start' && parsed.content_block && parsed.content_block.type === 'web_search_tool_result') {
           const results = parsed.content_block.content;
           if (Array.isArray(results)) {
             for (const r of results) {
@@ -584,13 +729,20 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
         } else if (type === 'message_delta') {
           const stopReason = parsed.delta?.stop_reason;
           if (parsed.usage) {
-            await writer.write(encoder.encode(JSON.stringify({
-              usage: {
-                prompt_tokens: parsed.usage.input_tokens,
-                completion_tokens: parsed.usage.output_tokens,
-              },
-              stop_reason: stopReason,
-            }) + '\n'));
+            // input_tokens is usually absent here; message_start already sent the
+            // real one, so never overwrite it with an undefined.
+            const usage = {
+              completion_tokens: parsed.usage.output_tokens,
+              cached_tokens: parsed.usage.cache_read_input_tokens,
+              cache_write_tokens: parsed.usage.cache_creation_input_tokens,
+            };
+            if (typeof parsed.usage.input_tokens === 'number') {
+              usage.prompt_tokens = parsed.usage.input_tokens;
+            }
+            await writer.write(encoder.encode(JSON.stringify({ usage }) + '\n'));
+          }
+          if (stopReason) {
+            await writer.write(encoder.encode(JSON.stringify({ stop_reason: normalizeStopReason(stopReason) }) + '\n'));
           }
           if (stopReason === 'tool_use') {
             await writer.write(encoder.encode(JSON.stringify({ stop: { reason: 'tool_use' } }) + '\n'));
@@ -676,6 +828,8 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
               prompt_tokens: parsed.usageMetadata.promptTokenCount,
               completion_tokens: parsed.usageMetadata.candidatesTokenCount,
               total_tokens: parsed.usageMetadata.totalTokenCount,
+              cached_tokens: parsed.usageMetadata.cachedContentTokenCount,
+              reasoning_tokens: parsed.usageMetadata.thoughtsTokenCount,
             }
           }) + '\n'));
         }
@@ -684,6 +838,13 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
         if (candidates && candidates.length) {
           for (const candidate of candidates) {
             collectChunks(candidate.groundingMetadata);
+            // Gemini reports STOP alongside a function call, so this is only
+            // trustworthy as a reason, never as a "should the loop continue".
+            if (candidate.finishReason) {
+              await writer.write(encoder.encode(JSON.stringify({
+                stop_reason: normalizeStopReason(candidate.finishReason),
+              }) + '\n'));
+            }
             const parts = candidate.content?.parts;
             if (parts) {
               for (const part of parts) {

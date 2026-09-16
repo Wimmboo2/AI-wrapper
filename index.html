@@ -2220,6 +2220,7 @@
       display: flex;
       align-items: center;
       gap: 6px;
+      flex: none;
     }
 
     .metrics-toggle svg {
@@ -2236,16 +2237,52 @@
       font-family: var(--mono);
       font-size: 10.5px;
       color: var(--text-faint);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
     }
 
+
+    .metrics-panel { display: none; }
+    .metrics-row.open .metrics-panel { display: block; }
+
     .metrics-grid {
-      display: none;
+      display: grid;
       grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
       gap: 8px;
       padding: 4px 0 8px;
     }
 
-    .metrics-row.open .metrics-grid { display: grid; }
+    /* Sheet furniture: only ever visible once the panel is a bottom sheet. */
+    .metrics-sheet-head { display: none; }
+
+    .metrics-sheet-close {
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
+      display: inline-flex;
+    }
+
+    .metrics-sheet-close svg { width: 18px; height: 18px; }
+
+    .metrics-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 110;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    .metrics-backdrop.visible {
+      display: block;
+      opacity: 1;
+    }
 
     .metric-cell {
       background: transparent;
@@ -2945,7 +2982,55 @@
 
       .empty-title { font-size: 26px; }
 
-      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+      /* Expanded, the panel is taller than a phone has room for once the
+         keyboard is up, so it lifts out of the flow into a bottom sheet —
+         the same treatment the model picker and effort menu already get. */
+      .metrics-row.open .metrics-panel {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: 100vw;
+        max-height: 72vh;
+        max-height: 72dvh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        border-radius: 20px 20px 0 0;
+        border: 1px solid var(--border);
+        border-bottom: none;
+        background: var(--bg-elevated);
+        box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.55);
+        z-index: 120;
+        padding: 0 14px;
+        padding-bottom: max(14px, env(safe-area-inset-bottom));
+        animation: slideUpSheet 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .metrics-sheet-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        position: sticky;
+        top: 0;
+        background: var(--bg-elevated);
+        padding: 12px 0 8px;
+        margin-bottom: 2px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        z-index: 1;
+      }
+
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px 10px;
+        padding: 8px 0;
+      }
+
+      .metric-cell { padding: 3px 2px; }
+      .metric-label { font-size: 9.5px; margin-bottom: 2px; }
+      .metric-value { font-size: 13px; }
 
       /* Message actions always visible on touch screens */
       .message-actions {
@@ -3178,6 +3263,7 @@
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
     <div class="model-picker-backdrop" id="modelPickerBackdrop"></div>
     <div class="effort-menu-backdrop" id="effortMenuBackdrop"></div>
+    <div class="metrics-backdrop" id="metricsBackdrop"></div>
 
     <main class="main">
       <div class="topbar">
@@ -3235,10 +3321,20 @@
             </span>
             <span class="metrics-summary" id="metricsSummary">—</span>
           </button>
-          <!-- Cells are built by updateMetrics: a metric with no data is left
-               out of the grid entirely rather than rendered as a dash. -->
-          <div class="metrics-grid" id="metricsGrid"></div>
-          <div class="metrics-foot" id="metricsFoot" style="display:none;"></div>
+          <!-- Inline on desktop, a bottom sheet on phones: expanded, this is
+               taller than a phone has room for above the keyboard. Cells are
+               built by updateMetrics, and a metric with no data is left out of
+               the grid entirely rather than rendered as a dash. -->
+          <div class="metrics-panel" id="metricsPanel">
+            <div class="metrics-sheet-head">
+              <span>Metrics</span>
+              <button type="button" class="metrics-sheet-close" id="metricsSheetClose" aria-label="Close metrics">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div class="metrics-grid" id="metricsGrid"></div>
+            <div class="metrics-foot" id="metricsFoot" style="display:none;"></div>
+          </div>
         </div>
 
         <div class="composer-shell" id="composerShell">
@@ -6186,7 +6282,9 @@
         var chat = getActiveChat();
         var hasMessages = !!(chat && chat.messages.length);
         var note = composerNote;
-        metricsRow.classList.toggle('visible', hasMessages || !!(chat && chat.metrics));
+        var metricsVisible = hasMessages || !!(chat && chat.metrics);
+        metricsRow.classList.toggle('visible', metricsVisible);
+        if (!metricsVisible && metricsRow.classList.contains('open')) closeMetricsPanel();
         if (!hasMessages) {
           var mountEl = document.getElementById('emptyComposerMount');
           if (mountEl && composerShell.parentElement !== mountEl) { mountEl.appendChild(composerShell); }
@@ -7579,6 +7677,10 @@
             if (wrap) closeEffortMenu(wrap);
           }
           if (menus.length) e.preventDefault();
+          if (metricsRow.classList.contains('open') && isMetricsSheet()) {
+            e.preventDefault();
+            closeMetricsPanel();
+          }
           closeRegenerateMenus();
         }
       });
@@ -7679,7 +7781,30 @@
         settings.customBaseURL = e.target.value.trim();
       });
 
-      $('metricsToggle').addEventListener('click', function() { metricsRow.classList.toggle('open'); });
+      // On phones the expanded panel is a bottom sheet, so it needs a backdrop
+      // and the usual ways out. On desktop it just expands in place.
+      function isMetricsSheet() { return window.innerWidth <= 768; }
+
+      function setMetricsOpen(open) {
+        metricsRow.classList.toggle('open', open);
+        $('metricsToggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+        var backdrop = $('metricsBackdrop');
+        if (backdrop) backdrop.classList.toggle('visible', open && isMetricsSheet());
+      }
+
+      function closeMetricsPanel() { setMetricsOpen(false); }
+
+      $('metricsToggle').addEventListener('click', function() {
+        setMetricsOpen(!metricsRow.classList.contains('open'));
+      });
+      $('metricsSheetClose').addEventListener('click', closeMetricsPanel);
+      $('metricsBackdrop').addEventListener('click', closeMetricsPanel);
+      // Rotating to landscape turns the sheet back into an inline block, so the
+      // backdrop has to go with it or it covers a panel that is no longer there.
+      window.addEventListener('resize', function() {
+        var backdrop = $('metricsBackdrop');
+        if (backdrop) backdrop.classList.toggle('visible', metricsRow.classList.contains('open') && isMetricsSheet());
+      });
 
       messagesWrap.addEventListener('scroll', updateScrolledUp);
       $('jumpLatestBtn').addEventListener('click', jumpToLatest);

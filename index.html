@@ -39,6 +39,18 @@
       --accent-soft: rgba(212, 162, 127, 0.14);
       --user-msg: #2e2e2e;
       --danger: #d47878;
+      /* Metrics ramps. Not eyeballed: a four-step ordinal ramp on the accent hue
+         (monotone lightness, single hue) plus the four reserved status steps,
+         each snapped until it clears 4.5:1 as body text on BOTH surfaces below.
+         Worst step is 5.64:1 — the old bar used #5c5a56 at 2.09:1. */
+      --speed-1: #c69a70;
+      --speed-2: #ddb595;
+      --speed-3: #f0d0b6;
+      --speed-4: #fdeddc;
+      --status-good: #17b317;
+      --status-warning: #fab219;
+      --status-serious: #ec835a;
+      --status-critical: #d47878;
       --incognito: #a89fd4;
       --incognito-soft: rgba(168, 159, 212, 0.14);
       --sidebar-w: 260px;
@@ -2207,14 +2219,14 @@
       padding: 6px 4px;
       border: none;
       background: transparent;
-      color: var(--text-faint);
+      color: var(--text-secondary);
       font-size: 11.5px;
       font-weight: 500;
       cursor: pointer;
       transition: color 0.12s;
     }
 
-    .metrics-toggle:hover { color: var(--text-muted); }
+    .metrics-toggle:hover { color: var(--text); }
 
     .metrics-toggle-left {
       display: flex;
@@ -2235,8 +2247,8 @@
 
     .metrics-summary {
       font-family: var(--mono);
-      font-size: 10.5px;
-      color: var(--text-faint);
+      font-size: 11px;
+      color: var(--text-secondary);
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -2290,26 +2302,42 @@
     }
 
     .metric-label {
-      font-size: 10px;
+      font-size: 10.5px;
       font-weight: 500;
       text-transform: uppercase;
       letter-spacing: 0.04em;
-      color: var(--text-faint);
+      color: var(--text-secondary);
       margin-bottom: 3px;
     }
 
     .metric-value {
       font-family: var(--mono);
-      font-size: 12.5px;
+      font-size: 14px;
       font-weight: 500;
-      color: var(--text-secondary);
+      color: var(--text);
     }
 
     .metric-value.accent { color: var(--accent); }
 
-    /* A number the provider never reported, derived from character counts.
-       It has to be visibly different from a real one or the whole bar lies. */
-    .metric-value.estimated { color: var(--text-faint); }
+    /* Speed is a bucket, so it takes the ordinal ramp: brighter is faster, up to
+       near-white at the top. The tier word always ships alongside — colour never
+       carries the meaning on its own. */
+    .metric-value.speed-1, .metrics-summary .speed-1 { color: var(--speed-1); }
+    .metric-value.speed-2, .metrics-summary .speed-2 { color: var(--speed-2); }
+    .metric-value.speed-3, .metrics-summary .speed-3 { color: var(--speed-3); }
+    .metric-value.speed-4, .metrics-summary .speed-4 { color: var(--speed-4); }
+
+    /* Filling the context window is a state, not a quantity, so it takes the
+       reserved status steps — again always with a word beside them. */
+    .metric-value.status-good { color: var(--status-good); }
+    .metric-value.status-warning { color: var(--status-warning); }
+    .metric-value.status-serious { color: var(--status-serious); }
+    .metric-value.status-critical { color: var(--status-critical); }
+
+    /* A number the provider never reported, derived from character counts. It
+       has to look different from a real one — but the difference is the badge,
+       not illegibility, so this stays a readable ink. */
+    .metric-value.estimated { color: var(--text-secondary); }
     .metric-value.estimated::after {
       content: 'est';
       font-size: 8.5px;
@@ -2322,8 +2350,8 @@
 
     .metric-sub {
       font-family: var(--mono);
-      font-size: 9.5px;
-      color: var(--text-faint);
+      font-size: 11px;
+      color: var(--text-secondary);
       margin-top: 3px;
       line-height: 1.35;
     }
@@ -2340,10 +2368,12 @@
     }
 
     .phase-seg { height: 100%; transition: width 0.3s ease; }
-    .phase-seg.wait { background: var(--text-muted); }
-    .phase-seg.think { background: var(--accent); opacity: 0.4; }
-    .phase-seg.gen { background: var(--accent); }
-    .phase-seg.tool { background: var(--incognito); opacity: 0.8; }
+    /* A 2px surface gap so adjacent segments read as separate marks. */
+    .phase-seg + .phase-seg { margin-left: 2px; }
+    .phase-seg.wait { background: var(--speed-1); }
+    .phase-seg.think { background: var(--speed-2); }
+    .phase-seg.gen { background: var(--speed-3); }
+    .phase-seg.tool { background: var(--speed-4); }
 
     .phase-legend {
       display: flex;
@@ -2351,8 +2381,8 @@
       gap: 4px 10px;
       margin-top: 6px;
       font-family: var(--mono);
-      font-size: 9.5px;
-      color: var(--text-faint);
+      font-size: 10.5px;
+      color: var(--text-secondary);
     }
 
     .phase-legend span {
@@ -2370,49 +2400,50 @@
       flex: none;
     }
 
-    .phase-legend i.wait { background: var(--text-muted); }
-    .phase-legend i.think { background: var(--accent); opacity: 0.4; }
-    .phase-legend i.gen { background: var(--accent); }
-    .phase-legend i.tool { background: var(--incognito); opacity: 0.8; }
+    .phase-legend i.wait { background: var(--speed-1); }
+    .phase-legend i.think { background: var(--speed-2); }
+    .phase-legend i.gen { background: var(--speed-3); }
+    .phase-legend i.tool { background: var(--speed-4); }
 
     .metrics-foot {
       display: flex;
       flex-wrap: wrap;
-      gap: 4px 10px;
-      padding: 6px 2px 2px;
+      gap: 3px 18px;
+      padding: 7px 2px 2px;
       margin-top: 2px;
       border-top: 1px solid var(--border);
       font-family: var(--mono);
-      font-size: 9.5px;
-      color: var(--text-faint);
+      font-size: 10.5px;
+      color: var(--text-secondary);
     }
 
-    .metrics-foot span:not(:first-child)::before {
-      content: '\00b7';
-      margin-right: 10px;
-      opacity: 0.6;
-    }
+    .metrics-foot span { white-space: nowrap; }
 
     .metrics-foot .warn { color: var(--danger); }
 
     .metrics-summary .warn { color: var(--danger); }
 
     .context-bar {
-      height: 3px;
-      background: rgba(255,255,255,0.06);
-      border-radius: 2px;
-      margin-top: 5px;
+      height: 6px;
+      background: rgba(255,255,255,0.10);
+      border-radius: 3px;
+      margin-top: 6px;
       overflow: hidden;
     }
 
     .context-bar-fill {
       height: 100%;
       background: var(--accent);
-      border-radius: 2px;
-      transition: width 0.3s ease;
+      border-radius: 3px;
+      transition: width 0.3s ease, background 0.3s ease;
       width: 0%;
-      opacity: 0.7;
+      min-width: 2px;
     }
+
+    .context-bar-fill.status-good { background: var(--status-good); }
+    .context-bar-fill.status-warning { background: var(--status-warning); }
+    .context-bar-fill.status-serious { background: var(--status-serious); }
+    .context-bar-fill.status-critical { background: var(--status-critical); }
 
     /* Modal */
     .modal-overlay {
@@ -3029,8 +3060,9 @@
       }
 
       .metric-cell { padding: 3px 2px; }
-      .metric-label { font-size: 9.5px; margin-bottom: 2px; }
-      .metric-value { font-size: 13px; }
+      .metric-label { font-size: 10px; margin-bottom: 2px; }
+      .metric-value { font-size: 14.5px; }
+      .metric-sub { font-size: 10.5px; }
 
       /* Message actions always visible on touch screens */
       .message-actions {
@@ -6001,7 +6033,9 @@
         cell.appendChild(label);
         if (opts.value) {
           var value = document.createElement('div');
-          value.className = 'metric-value' + (opts.accent ? ' accent' : '') + (opts.estimated ? ' estimated' : '');
+          value.className = 'metric-value'
+            + (opts.tone ? ' ' + opts.tone : (opts.accent ? ' accent' : ''))
+            + (opts.estimated ? ' estimated' : '');
           value.textContent = opts.value;
           cell.appendChild(value);
         }
@@ -6018,6 +6052,31 @@
       // Below these the measurement is noise, not a fast model.
       var MIN_RATE_WINDOW_MS = 50;
       var MIN_PREFILL_WINDOW_MS = 20;
+
+      // Generation speed is a bucket, so it gets the ordinal ramp: brighter the
+      // faster it went. Every tier also carries a word, because a colour on its
+      // own is not something everyone can read.
+      var SPEED_TIERS = [
+        { max: 8, tone: 'speed-1', word: 'crawling' },
+        { max: 30, tone: 'speed-2', word: 'steady' },
+        { max: 120, tone: 'speed-3', word: 'quick' },
+        { max: Infinity, tone: 'speed-4', word: 'blazing' },
+      ];
+
+      // Filling the window is a state, so it gets the reserved status steps.
+      var CONTEXT_TIERS = [
+        { max: 50, tone: '', bar: 'status-good', word: 'plenty of room' },
+        { max: 75, tone: 'status-warning', bar: 'status-warning', word: 'past halfway' },
+        { max: 90, tone: 'status-serious', bar: 'status-serious', word: 'filling up' },
+        { max: Infinity, tone: 'status-critical', bar: 'status-critical', word: 'almost full' },
+      ];
+
+      function pickTier(tiers, v) {
+        for (var i = 0; i < tiers.length; i++) {
+          if (v < tiers[i].max) return tiers[i];
+        }
+        return tiers[tiers.length - 1];
+      }
 
       var PHASE_ORDER = [
         { key: 'wait', cls: 'wait', label: 'prefill' },
@@ -6054,11 +6113,11 @@
         return frag;
       }
 
-      function contextBarEl(pct) {
+      function contextBarEl(pct, tone) {
         var bar = document.createElement('div');
         bar.className = 'context-bar';
         var fill = document.createElement('div');
-        fill.className = 'context-bar-fill';
+        fill.className = 'context-bar-fill' + (tone ? ' ' + tone : '');
         fill.style.width = pct + '%';
         bar.appendChild(fill);
         return bar;
@@ -6124,13 +6183,16 @@
 
         // --- speed ---------------------------------------------------------
         var genTs = m.generation_tokens_per_second;
+        var genTier = genTs != null ? pickTier(SPEED_TIERS, Number(genTs)) : null;
         if (genTs != null) {
+          var genSub = [genTier.word];
+          genSub.push(fromServer ? rateNote : (phases ? 'over ' + formatMs(phases.think + phases.gen) : rateNote));
           grid.appendChild(metricCell({
             label: 'Gen t/s',
             value: (fromServer ? '' : tilde) + formatRate(genTs) + ' t/s',
-            accent: true,
+            tone: genTier.tone,
             estimated: est && !fromServer,
-            sub: fromServer ? rateNote : (phases ? 'over ' + formatMs(phases.think + phases.gen) : rateNote),
+            sub: genSub.join(' \u00b7 '),
             title: 'Output tokens divided by the time actually spent generating. Prefill, reasoning-before-first-token and tool execution are all outside this window.',
           }));
         }
@@ -6212,13 +6274,15 @@
         var ctxUsed = m.context_used != null ? Number(m.context_used) : null;
         if (ctxUsed != null && ctxMax > 0) {
           var ctxPct = Math.min(100, (ctxUsed / ctxMax) * 100);
+          var ctxTier = pickTier(CONTEXT_TIERS, ctxPct);
           grid.appendChild(metricCell({
             label: 'Context usage',
             value: tilde + fmtInt(ctxUsed) + ' / ' + fmtInt(ctxMax) + ' (' + ctxPct.toFixed(1) + '%)',
+            tone: ctxTier.tone,
             estimated: est,
             wide: true,
-            extra: contextBarEl(ctxPct),
-            sub: fmtInt(Math.max(0, ctxMax - ctxUsed)) + ' left',
+            extra: contextBarEl(ctxPct, ctxTier.bar),
+            sub: ctxTier.word + ' \u00b7 ' + fmtInt(Math.max(0, ctxMax - ctxUsed)) + ' left',
             title: 'What the next request will carry \u2014 the last turn only, not the sum of everything billed.',
           }));
         }
@@ -6267,6 +6331,13 @@
           if (!summary.length) {
             summaryEl.textContent = DASH;
           } else {
+            if (genTier) {
+              var rate = document.createElement('span');
+              rate.className = genTier.tone;
+              rate.textContent = summary.shift();
+              summaryEl.appendChild(rate);
+              if (summary.length) summaryEl.appendChild(document.createTextNode(' \u00b7 '));
+            }
             summaryEl.appendChild(document.createTextNode(summary.join(' \u00b7 ')));
             if (m.partial || m.stop_reason === 'max_tokens') {
               var warn = document.createElement('span');

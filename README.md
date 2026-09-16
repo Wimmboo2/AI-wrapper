@@ -93,6 +93,20 @@ an estimate — a value derived from character counts is greyed out and carries 
   conversation does, because every turn re-sends the whole history.
 - Truncation, content filtering and unfinished replies are called out explicitly.
 
+Colour does work, not decoration. Generation speed is a bucket, so it takes a
+four-step ordinal ramp on the accent hue — brighter is faster, up to near-white —
+and the tier word (`crawling`, `steady`, `quick`, `blazing`) always ships beside
+it, because a colour on its own is not something every reader can use. Context
+usage takes the reserved status steps instead, and only once it matters: a roomy
+window is plain ink, and the colour appears as it fills. The time-breakdown bar
+is the same ordinal ramp in time order.
+
+Every step is measured, not eyeballed. The old bar drew its labels and
+sub-lines in `--text-faint`, which is **2.09:1** against the panel — less than
+half the 4.5:1 minimum for body text. Every colour in the panel now clears
+4.5:1 as text and 3:1 as a mark on both surfaces, checked against the rendered
+DOM rather than the stylesheet.
+
 Collapsed it is one line above the composer. Expanded it stays inline on
 desktop; on phones it becomes a bottom sheet — the same treatment the model
 picker and effort menu get — so it never competes with the composer or the

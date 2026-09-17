@@ -6767,14 +6767,50 @@
       // Incremental because a tag can be cut in half by a chunk boundary: any
       // trailing text that could still turn out to be the start of a tag is held
       // back rather than emitted, and released once the next chunk decides it.
-      // Matched case-insensitively and across the spellings models actually use,
-      // because an exact "<think>" match silently passes "<thinking>", "<Think>"
-      // and "< think >" straight through into the answer.
-      var THINK_OPEN_TAGS = ['<think>', '<thinking>', '<reason>', '<reasoning>'];
-      var THINK_CLOSE_TAGS = ['</think>', '</thinking>', '</reason>', '</reasoning>'];
-      // Whitespace inside the angle brackets is normalised away before matching,
-      // so the tag list stays small and readable.
-      var TAG_SCAN_RE = /<\s*\/?\s*[a-zA-Z]+\s*>/g;
+      // Reasoning leaks into the answer whenever the client does not recognise
+      // the delimiter the model was trained on. These are the families people
+      // actually run, each taken from the model's own chat template or from
+      // llama.cpp's parser rather than from memory:
+      //
+      //   <think>             DeepSeek-R1, Qwen3/QwQ, Kimi K2 Thinking,
+      //                       Granite 3.3, GLM, Nemotron, Phi-4-reasoning
+      //   <thought>           EXAONE Deep
+      //   [THINK]             Mistral Magistral / Ministral Reasoning
+      //   <seed:think>        ByteDance Seed-OSS
+      //   ◁think▷             Moonshot Kimi-Dev
+      //   <|START_THINKING|>  Cohere Command A Reasoning
+      //   <|channel|>…        OpenAI gpt-oss (Harmony) — not a tag pair at all,
+      //                       handled as a channel machine further down
+      //
+      // Matching is case-insensitive with internal whitespace normalised away,
+      // so <Thinking> and < think > are covered without listing them.
+      var THINK_OPEN_TAGS = [
+        '<think>', '<thinking>', '<reason>', '<reasoning>', '<thought>',
+        '<seed:think>', '[think]', '<|start_thinking|>', '◁think▷',
+      ];
+      var THINK_CLOSE_TAGS = [
+        '</think>', '</thinking>', '</reason>', '</reasoning>', '</thought>',
+        '</seed:think>', '[/think]', '<|end_thinking|>', '◁/think▷',
+      ];
+      // Neither opens nor closes reasoning, but must never reach the answer:
+      // Cohere wraps its reply in these, and Seed-OSS annotates its own budget.
+      var THINK_DROP_TAGS = [
+        '<|start_response|>', '<|end_response|>',
+        '<seed:cot_budget_reflect>', '</seed:cot_budget_reflect>',
+      ];
+      // gpt-oss emits named channels instead of a tag pair. Only "final" is the
+      // reply; "analysis" and "commentary" are reasoning and tool bookkeeping.
+      var HARMONY_TAGS = [
+        '<|channel|>', '<|message|>', '<|start|>', '<|end|>', '<|return|>',
+        '<|call|>', '<|constrain|>',
+      ];
+
+      // One scanner for all four marker shapes: <|pipe|>, <xml:tag>, [BRACKET]
+      // and ◁unicode▷. The pipe form is first so <|channel|> cannot be mistaken
+      // for an XML tag.
+      var TAG_SCAN_RE = /<\|[a-zA-Z_]+\|>|<\s*\/?\s*[a-zA-Z][\w:.-]*\s*>|\[\s*\/?\s*[A-Za-z_]+\s*\]|◁\s*\/?\s*[a-zA-Z]+\s*▷/g;
+      var MARKER_OPENERS = ['<', '[', '◁'];
+      var MARKER_CLOSERS = ['>', ']', '▷'];
 
       // presumeOpen starts the splitter already inside a reasoning block. Used for
       // models known to open implicitly, so their reasoning streams straight into
@@ -6784,35 +6820,52 @@
         return {
           buf: '', inThink: !!presumeOpen, sawOpen: false, reclaimed: false,
           presumed: !!presumeOpen, everClosed: false,
+          harmony: false, hState: 'idle', hChannel: '', hSpec: '',
         };
       }
 
       // Finds the earliest tag from `tags` in `hay`, tolerating case and internal
-      // whitespace. Returns {idx, len} into the ORIGINAL string, or null.
+      // whitespace. Returns {idx, len, norm} into the ORIGINAL string, or null.
       function findThinkTag(hay, tags) {
         TAG_SCAN_RE.lastIndex = 0;
         var m;
         while ((m = TAG_SCAN_RE.exec(hay)) !== null) {
           var norm = m[0].replace(/\s+/g, '').toLowerCase();
-          if (tags.indexOf(norm) !== -1) return { idx: m.index, len: m[0].length };
+          if (tags.indexOf(norm) !== -1) return { idx: m.index, len: m[0].length, norm: norm };
         }
         return null;
       }
 
+      // Several tag sets are scanned at once, and only the one that starts
+      // earliest may act — otherwise a later tag would eat the text before it.
+      function earliestTag(hits) {
+        var best = null;
+        for (var i = 0; i < hits.length; i++) {
+          var h = hits[i];
+          if (h && h.hit && (!best || h.hit.idx < best.hit.idx)) best = h;
+        }
+        return best;
+      }
+
       // How much of the tail might still grow into one of `tags` once more text
       // arrives — that many characters are held back rather than emitted. Works
-      // from the last "<": if what follows it has no ">" yet and could still be
-      // the start of a tag, it waits for the next chunk.
+      // from the last opening character: if what follows has no closing one yet
+      // and could still be the start of a tag, it waits for the next chunk.
       function danglingTagLen(s, tags) {
-        var lt = s.lastIndexOf('<');
-        if (lt === -1) return 0;
-        var tail = s.slice(lt);
-        // Already has a closing bracket, so it is a complete tag that findThinkTag
-        // has declined — nothing left to wait for.
-        if (tail.indexOf('>') !== -1) return 0;
+        var start = -1;
+        for (var i = 0; i < MARKER_OPENERS.length; i++) {
+          var p = s.lastIndexOf(MARKER_OPENERS[i]);
+          if (p > start) start = p;
+        }
+        if (start === -1) return 0;
+        var tail = s.slice(start);
+        for (var j = 0; j < MARKER_CLOSERS.length; j++) {
+          // Already terminated, so it is a complete marker findThinkTag declined.
+          if (tail.indexOf(MARKER_CLOSERS[j]) !== -1) return 0;
+        }
         var norm = tail.replace(/\s+/g, '').toLowerCase();
-        for (var i = 0; i < tags.length; i++) {
-          if (tags[i].indexOf(norm) === 0) return s.length - lt;
+        for (var k = 0; k < tags.length; k++) {
+          if (tags[k].indexOf(norm) === 0) return s.length - start;
         }
         return 0;
       }
@@ -6829,49 +6882,116 @@
         var reclaim = false;
 
         while (st.buf) {
+          // --- Harmony: a channel machine, not a tag pair --------------------
+          if (st.harmony) {
+            var hm = findThinkTag(st.buf, HARMONY_TAGS);
+            var upto = hm ? hm.idx : st.buf.length - danglingTagLen(st.buf, HARMONY_TAGS);
+            var seg = st.buf.slice(0, upto);
+            if (seg) {
+              if (st.hState === 'message') {
+                if (st.hChannel === 'final') text += seg; else think += seg;
+              } else if (st.hState === 'channel') {
+                st.hSpec += seg;
+              }
+              // Header and inter-segment text is template bookkeeping: dropped.
+            }
+            st.buf = st.buf.slice(upto);
+            if (!hm) break;
+            st.buf = st.buf.slice(hm.len);
+            if (hm.norm === '<|channel|>') {
+              st.hState = 'channel';
+              st.hSpec = '';
+            } else if (hm.norm === '<|message|>') {
+              // The spec can carry a tool target: "commentary to=functions.run".
+              st.hChannel = (st.hSpec.replace(/^\s+/, '').split(/[\s<]/)[0] || '').toLowerCase();
+              st.hState = 'message';
+            } else if (hm.norm === '<|start|>') {
+              st.hState = 'header';
+            } else if (hm.norm === '<|end|>' || hm.norm === '<|return|>' || hm.norm === '<|call|>') {
+              if (st.hState === 'message' && st.hChannel !== 'final') {
+                st.everClosed = true;
+                closed = true;
+              }
+              st.hState = 'idle';
+              st.hChannel = '';
+            }
+            // <|constrain|> and anything unrecognised: marker dropped, state kept.
+            continue;
+          }
+
+          var harmonyHit = findThinkTag(st.buf, HARMONY_TAGS);
+          var dropHit = findThinkTag(st.buf, THINK_DROP_TAGS);
+
           if (!st.inThink) {
             var open = findThinkTag(st.buf, THINK_OPEN_TAGS);
-            // Reasoning models that carry <think> in their prompt template emit
-            // only the CLOSING tag — the reply opens mid-reasoning with no opener
-            // at all. A close arriving before any open means everything so far was
-            // reasoning, so the caller is told to move it. Only ever done once, and
-            // never after a real opening tag, so a later stray tag cannot eat the
-            // answer.
+            // Reasoning models that carry the opening tag in their prompt template
+            // emit only the CLOSING one — the reply opens mid-reasoning with no
+            // opener at all. A close arriving before any open means everything so
+            // far was reasoning, so the caller is told to move it. Only ever done
+            // once, and never after a real opening tag, so a later stray tag
+            // cannot eat the answer.
             var orphan = (st.sawOpen || st.reclaimed) ? null : findThinkTag(st.buf, THINK_CLOSE_TAGS);
-            if (orphan && (!open || orphan.idx < open.idx)) {
-              think += st.buf.slice(0, orphan.idx);
-              st.buf = st.buf.slice(orphan.idx + orphan.len);
+            var first = earliestTag([
+              { kind: 'harmony', hit: harmonyHit },
+              { kind: 'drop', hit: dropHit },
+              { kind: 'open', hit: open },
+              { kind: 'orphan', hit: orphan },
+            ]);
+            if (first) {
+              text += st.buf.slice(0, first.hit.idx);
+              if (first.kind === 'harmony') {
+                st.buf = st.buf.slice(first.hit.idx);
+                st.harmony = true;
+                continue;
+              }
+              st.buf = st.buf.slice(first.hit.idx + first.hit.len);
+              if (first.kind === 'drop') continue;
+              if (first.kind === 'open') {
+                st.inThink = true;
+                st.sawOpen = true;
+                continue;
+              }
+              // orphan close: everything emitted so far was really reasoning
+              think += text;
+              text = '';
               st.reclaimed = true;
               st.everClosed = true;
               reclaim = true;
               closed = true;
               continue;
             }
-            if (open) {
-              text += st.buf.slice(0, open.idx);
-              st.buf = st.buf.slice(open.idx + open.len);
-              st.inThink = true;
-              st.sawOpen = true;
-              continue;
-            }
             // While an implicit close is still possible, a partial closing tag has
             // to be held back too, or "</thi" would be emitted before "nk>" lands.
-            var openCandidates = (st.sawOpen || st.reclaimed) ? THINK_OPEN_TAGS : THINK_OPEN_TAGS.concat(THINK_CLOSE_TAGS);
+            var openCandidates = ((st.sawOpen || st.reclaimed) ? THINK_OPEN_TAGS : THINK_OPEN_TAGS.concat(THINK_CLOSE_TAGS))
+              .concat(THINK_DROP_TAGS, HARMONY_TAGS);
             var holdOpen = danglingTagLen(st.buf, openCandidates);
             text += st.buf.slice(0, st.buf.length - holdOpen);
             st.buf = st.buf.slice(st.buf.length - holdOpen);
             break;
           }
+
           var close = findThinkTag(st.buf, THINK_CLOSE_TAGS);
-          if (close) {
-            think += st.buf.slice(0, close.idx);
-            st.buf = st.buf.slice(close.idx + close.len);
+          var firstIn = earliestTag([
+            { kind: 'harmony', hit: harmonyHit },
+            { kind: 'drop', hit: dropHit },
+            { kind: 'close', hit: close },
+          ]);
+          if (firstIn) {
+            think += st.buf.slice(0, firstIn.hit.idx);
+            if (firstIn.kind === 'harmony') {
+              st.buf = st.buf.slice(firstIn.hit.idx);
+              st.harmony = true;
+              st.inThink = false;
+              continue;
+            }
+            st.buf = st.buf.slice(firstIn.hit.idx + firstIn.hit.len);
+            if (firstIn.kind === 'drop') continue;
             st.inThink = false;
             st.everClosed = true;
             closed = true;
             continue;
           }
-          var holdClose = danglingTagLen(st.buf, THINK_CLOSE_TAGS);
+          var holdClose = danglingTagLen(st.buf, THINK_CLOSE_TAGS.concat(THINK_DROP_TAGS, HARMONY_TAGS));
           think += st.buf.slice(0, st.buf.length - holdClose);
           st.buf = st.buf.slice(st.buf.length - holdClose);
           break;
@@ -6887,6 +7007,16 @@
       function flushThinkSplitter(st) {
         var rest = st.buf;
         st.buf = '';
+        if (st.harmony) {
+          // A truncated Harmony reply can stop mid-segment; route the tail the
+          // way the channel it was in would have.
+          if (st.hState === 'message') {
+            return st.hChannel === 'final'
+              ? { text: rest, think: '', unpresume: false }
+              : { text: '', think: rest, unpresume: false };
+          }
+          return { text: '', think: '', unpresume: false };
+        }
         if (st.presumed && !st.everClosed) {
           return { text: rest, think: '', unpresume: true };
         }

@@ -37,6 +37,9 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 - Copy individual messages
 - Text-to-speech for assistant responses (Web Speech Synthesis API)
 - Thinking/reasoning tokens displayed in expandable details (Anthropic extended thinking, OpenAI reasoning)
+- Inline reasoning delimiters are recognised across every common family, so a
+  model's chain of thought lands in **Thought process** instead of the answer —
+  see below
 
 ### Composer
 
@@ -208,6 +211,47 @@ Keeping tool steps *inside* the assistant message rather than as separate `role:
 Adding Novita alongside E2B looked like it would mean a second integration. It didn't. Reading Novita's SDK rather than trusting the marketing copy — both vendors document an SDK and neither publishes a REST reference — showed the two are wire-compatible: the same `POST /sandboxes` taking `{templateID, timeout}`, the same `sandboxID` / `domain` / `envdAccessToken` response keys, the same `DELETE` and `/timeout` routes, the same daemon on port 49983 behind a `{port}-{sandboxId}.{domain}` host, and the same `process.Process` Connect service. Novita says it is not an E2B fork, and the JSON on the wire is identical either way.
 
 So the two differ by base URL and domain, nothing else, and the Worker carries a small provider table instead of a second implementation. The one thing that must stay per-provider is the SSRF check: the caller supplies the domain, so it is validated against the selected provider's namespace rather than one general pattern — otherwise picking E2B and passing a Novita host (or anything else) would sail through.
+
+### Every model hides its reasoning differently
+
+A provider that reports reasoning in a separate field is easy. The hard case is
+a model that just *writes* its reasoning into the same text stream wrapped in
+whatever delimiter it was trained on — because if the client does not recognise
+that delimiter, the entire chain of thought lands in the answer. Which
+delimiter it is turns out to be nearly unstandardised:
+
+| Delimiter | Models |
+|---|---|
+| `<think>…</think>` | DeepSeek-R1, Qwen3 / QwQ, Kimi K2 Thinking, Granite 3.3, GLM, Nemotron, Phi-4-reasoning |
+| `<thought>…</thought>` | EXAONE Deep |
+| `[THINK]…[/THINK]` | Mistral Magistral / Ministral Reasoning |
+| `<seed:think>…</seed:think>` | ByteDance Seed-OSS |
+| `◁think▷…◁/think▷` | Moonshot Kimi-Dev |
+| `<\|START_THINKING\|>…<\|END_THINKING\|>` | Cohere Command A Reasoning |
+| `<\|channel\|>analysis<\|message\|>…<\|end\|>` | OpenAI gpt-oss (Harmony) |
+
+Each of those was taken from the model's own `chat_template.jinja` or from
+llama.cpp's parser, not from memory — several of the plausible-looking answers
+are wrong. Kimi K2 Thinking uses plain `<think>`, not the `◁think▷` its earlier
+models used. Cohere wraps the *answer* in `<|START_RESPONSE|>` too, so matching
+only the thinking pair still leaks.
+
+gpt-oss is the one that is not a tag pair at all. Harmony emits named channels —
+`<|channel|>analysis<|message|>…<|end|><|start|>assistant<|channel|>final<|message|>…` —
+where only `final` is the reply and `commentary` carries tool calls. It needs a
+small state machine rather than a delimiter list, which is why a scanner built
+for `<think>` passes all of it through verbatim: the old tag regex only matched
+`<alpha>`, so `<|channel|>` was never even a candidate.
+
+This matters most for self-hosted setups. llama.cpp's `llama-server` can strip
+reasoning itself with `--jinja --reasoning-format auto`, but llama-cpp-python has
+no equivalent, so the raw delimiters reach the client and the client is the only
+place left to fix it.
+
+The splitter holds back any partial marker at a chunk boundary, so a delimiter
+split across two SSE frames is still caught, and releases it unchanged if the
+stream ends mid-marker. Text that merely looks like a marker — `List<String>`,
+`if (a < b)`, `[INFO]`, a markdown link — passes through untouched.
 
 ### Tokens the provider never sent
 

@@ -4,7 +4,7 @@ Chat with **12 AI providers** through a single interface, and let any of them ru
 
 ## Why?
 
-I use different models for different tasks: Claude for reasoning, GPT for speed, Gemini for long contexts, Groq for free-tier throughput. Switching between provider-specific chat UIs wastes time. The hosted alternatives (Poe, ChatHub, TypingMind) either route your API keys through their servers or charge monthly. I wanted a chat interface I fully control — that lives at a URL I own, never sees my keys, works offline, and adds zero operational cost beyond the Cloudflare Worker's free tier.
+I use different models for different tasks: Claude for reasoning, GPT for speed, Gemini for long contexts, DeepInfra for open-model throughput. Switching between provider-specific chat UIs wastes time. The hosted alternatives (Poe, ChatHub, TypingMind) either route your API keys through their servers or charge monthly. I wanted a chat interface I fully control — that lives at a URL I own, never sees my keys, works offline, and adds zero operational cost beyond the Cloudflare Worker's free tier.
 
 ## What it can do
 
@@ -22,7 +22,7 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 
 ### Chat
 
-- **11 built-in providers**: OpenAI, Anthropic, Google AI Studio, Cerebras, NVIDIA NIM, Groq, Moonshot AI, Together AI, DeepSeek, xAI Grok, OpenRouter — plus custom OpenAI-compatible endpoints (Ollama, LiteLLM, local models)
+- **11 built-in providers**: OpenAI, Anthropic, Google AI Studio, DeepInfra, NVIDIA NIM, GMI Cloud, Moonshot AI, Together AI, DeepSeek, xAI Grok, OpenRouter — plus custom OpenAI-compatible endpoints (Ollama, LiteLLM, local models)
 - 90+ preset models with context window sizes
 - Streaming responses with token-by-token rendering and a typewriter cursor
 - Stop generation mid-response
@@ -45,7 +45,7 @@ I use different models for different tasks: Claude for reasoning, GPT for speed,
 
 - Auto-resizing textarea
 - `/` slash command menu with templates: code mode (strict production code), web search, explain, summarize, refactor, translate, fix bugs, write tests, and more
-- Web search toggle — queries Tavily, injects results into the prompt
+- Web search with your own Tavily key — sources, inline citations, and a credit estimate per search
 - Code mode — prepends a system prompt enforcing clean, complete, production-ready code
 - File attachment: images as base64 inline, text files truncated to 8 KB with a visible tag
 - Paste images from clipboard
@@ -143,7 +143,7 @@ Browser (index.html)
     │
     ├── POST /api/chat  ──→  Cloudflare Worker (worker.js)
     │                             │
-    │                             ├── OpenAI-compatible  (OpenAI, Cerebras, NVIDIA, Groq, Together, DeepSeek, xAI, OpenRouter, custom)
+    │                             ├── OpenAI-compatible  (OpenAI, DeepInfra, NVIDIA, GMI Cloud, Together, DeepSeek, xAI, OpenRouter, custom)
     │                             ├── Anthropic API       (Claude — different message format, system prompt handling, thinking tokens)
     │                             └── Google AI Studio    (Gemini — parts array, system instruction, Google Search grounding)
     │
@@ -156,7 +156,9 @@ The Cloudflare Worker (`worker.js`) is the critical piece. Each AI provider spea
 
 Agent mode extends the same pipe. The Worker normalizes each provider's tool-call format into `tool_start` / `tool_args` / `tool_end` events on that one NDJSON stream, and the loop itself runs in the browser: the page reassembles the call, posts it to the Worker's `/sandbox/*` routes, and feeds the output back as a tool result until the model stops asking for tools. The Worker forwards your own E2B key from each request body and stores nothing, so it still holds no secrets of any kind.
 
-Web search works by intercepting the request in the Worker, calling the Tavily API with the last user message, injecting the results as a system-level prefix, and tracking monthly usage via Cloudflare KV — capped at 200 searches/month per IP plus a 900/month global backstop. The xAI Grok provider uses native search parameters instead. A `GET /usage` route exposes the current counters so the settings UI can render a usage bar.
+Web search is bring-your-own-key. Paste a Tavily API key into Settings; it lives in the browser and travels with each search request to your own Worker, which forwards it to Tavily and keeps nothing. There is no shared key, no monthly cap, and no usage counter — searches bill your own Tavily account. Anthropic, Google AI Studio, and OpenRouter use their own built-in search by default; switch Search backend to Tavily to force your key for those providers too. The Worker times out slow searches, maps Tavily errors to readable messages, dedupes results, and injects a bounded set of sources into the prompt.
+
+xAI is a Tavily provider, not a native-search one: its Live Search (`search_parameters`) was removed and now returns `410 Gone`, and the Chat Completions endpoint accepts function tools only, so its built-in `web_search` tool is not reachable there either.
 
 ## What I figured out along the way
 
@@ -170,7 +172,7 @@ OpenAI, Anthropic, and Google each stream differently — SSE with `data:` prefi
 
 ### Web search reliability
 
-Tavily's API occasionally returns empty results, a non-200 status, or worse — times out after several seconds. The first fix just added error logging. Then I added an `ALLOWED_ORIGINS` check so only the production Worker URL can trigger search (preventing abuse of the Tavily key). Then a monthly cap via Cloudflare KV: 200 searches/month per IP (`tavily:YYYY-MM:<ip>`, IP taken from `CF-Connecting-IP`) plus a 900/month global backstop (`tavily:YYYY-MM`), both with a 40-day TTL, so one visitor can't burn the whole quota. A `GET /usage` route reads those counters so the settings modal can show a usage bar. The search results are injected as a system prefix with explicit instructions to the model: "Answer the question above using these search results. Do not mention the search." — without this, models would sometimes ignore the results and answer from training data. See the search block in `worker.js`.
+Tavily's API can return empty results, a non-200 status, or time out. The Worker now gives every search a 12-second deadline and turns the status code into a specific message — rejected key, rate limit, plan limit, or outage — instead of failing the whole chat. Results are deduped by normalised URL and capped at two per domain, and the prompt gets a bounded excerpt of each source rather than the full page text. Identical queries are cached in the Worker isolate for 15 minutes so a re-ask doesn't spend another credit. Because the key is yours, there is no shared-key origin gate or monthly quota to maintain. The prompt still tells the model to answer from the results, cite them as [1], [2], and not mention the search unless asked.
 
 ### Touch scroll vs. auto-scroll on mobile
 
@@ -257,7 +259,7 @@ stream ends mid-marker. Text that merely looks like a marker — `List<String>`,
 
 Streaming responses from a strict OpenAI-compatible endpoint carry no usage at
 all unless the request asks for it with `stream_options: {include_usage: true}`.
-Some gateways — Groq, Cerebras, DeepSeek, xAI, OpenRouter — send it unprompted,
+Some gateways — DeepSeek, xAI, OpenRouter — send it unprompted,
 which is exactly what makes the omission hard to spot: token counts appear for
 most providers and silently never for OpenAI itself, Together, Moonshot, NVIDIA,
 or anything self-hosted behind the `custom` provider.
@@ -294,7 +296,7 @@ Model-written code is also never shell-quoted. It's base64'd in the Worker and d
 
 ### API key security model
 
-API keys are stored in `localStorage` per provider, never in the Worker source. The Worker is just a passthrough — it receives the key, model, and messages in each POST body, forwards to the provider, and streams back. The Worker script itself contains zero secrets. This means anyone can audit the Worker code and confirm it doesn't log, store, or exfiltrate keys. The tradeoff is that keys travel through the Worker, which you must trust — but since you deploy it yourself, that trust boundary is you.
+API keys are stored in `localStorage` per provider (the Tavily key alongside them), never in the Worker source. The Worker is just a passthrough — it receives the key, model, and messages in each POST body, forwards to the provider, and streams back. The Worker script itself contains zero secrets. This means anyone can audit the Worker code and confirm it doesn't log, store, or exfiltrate keys. The tradeoff is that keys travel through the Worker, which you must trust — but since you deploy it yourself, that trust boundary is you.
 
 ## Setup
 
@@ -302,10 +304,7 @@ API keys are stored in `localStorage` per provider, never in the Worker source. 
 
 1. Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/) → Workers & Pages → Create
 2. Create a Worker, paste the contents of `worker.js`
-3. Set the following **secrets** (Worker → Settings → Variables):
-   - `TAVILY_API_KEY` — your [Tavily API key](https://tavily.com/) for web search (optional, search is disabled without it)
-   - `SEARCH_COUNTER` — create a KV namespace and bind it as `SEARCH_COUNTER` to enable the 900/month search cap
-   - `ALLOWED_ORIGINS` — optional, comma-separated list of origins allowed to trigger web search (for example `https://omni.example.com,https://omni.pages.dev`). Defaults to the origin hardcoded in `worker.js`, so set this if you serve the frontend from your own domain or a preview URL, otherwise search is refused. Note this is a courtesy gate rather than a security boundary — a caller that omits the `Origin` header passes it, and the per-IP monthly cap is what actually limits spend on your Tavily key.
+3. No Worker secrets are required. Each user pastes their own [Tavily API key](https://tavily.com/) into Settings; the Worker forwards it to Tavily per request and stores nothing.
 4. Deploy. Your Worker URL will be something like `https://omni-proxy.your-subdomain.workers.dev`
 
 ### 2. Serve the static files

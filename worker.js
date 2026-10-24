@@ -4,10 +4,10 @@
 
 const PROVIDER_URLS = {
   openai: 'https://api.openai.com/v1/chat/completions',
-  cerebras: 'https://api.cerebras.ai/v1/chat/completions',
+  deepinfra: 'https://api.deepinfra.com/v1/openai/chat/completions',
   nvidia: 'https://integrate.api.nvidia.com/v1/chat/completions',
   moonshot: 'https://api.moonshot.ai/v1/chat/completions',
-  groq: 'https://api.groq.com/openai/v1/chat/completions',
+  gmicloud: 'https://api.gmi-serving.com/v1/chat/completions',
   together: 'https://api.together.xyz/v1/chat/completions',
   deepseek: 'https://api.deepseek.com/chat/completions',
   xai: 'https://api.x.ai/v1/chat/completions',
@@ -15,26 +15,37 @@ const PROVIDER_URLS = {
   anthropic: 'https://api.anthropic.com/v1/messages',
 };
 
-// Default allowlist for the Tavily gate. Override with an ALLOWED_ORIGINS
-// environment variable (comma-separated) so a custom domain, a preview
-// deployment, or a fork is not silently refused web search.
-//
-// This is a courtesy gate, NOT a security boundary: a request that sends no
-// Origin header passes, and any client can simply omit it. The per-IP monthly
-// cap below is the control that actually limits spend on the Tavily key.
-const ALLOWED_ORIGINS = [
-  'https://claude-like-ai-wrapper.wimmboo.workers.dev',
-];
+// Tavily search cache. The Worker is stateless across restarts, so this is a
+// best-effort in-memory cache: repeated queries in the same isolate reuse the
+// results instead of charging the user's Tavily account again. No KV, no disk,
+// no secrets. Queries are hashed so raw prompts are not kept as Map keys.
+const SEARCH_CACHE_TTL_MS = 15 * 60 * 1000;
+const SEARCH_CACHE_MAX = 50;
+const searchCache = new Map();
 
-function allowedOrigins(env) {
-  const raw = env && env.ALLOWED_ORIGINS;
-  if (!raw) return ALLOWED_ORIGINS;
-  const list = String(raw).split(',').map(function(o) { return o.trim(); }).filter(Boolean);
-  return list.length ? list : ALLOWED_ORIGINS;
+function searchCacheKey(depth, topic, timeRange, query) {
+  let h = 5381;
+  for (let i = 0; i < query.length; i++) h = ((h * 33) ^ query.charCodeAt(i)) >>> 0;
+  return depth + '|' + topic + '|' + (timeRange || '') + '|' + h.toString(36);
 }
 
-const MONTHLY_CAP = 900;
-const IP_CAP = 200;
+function searchCacheGet(key) {
+  const hit = searchCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > SEARCH_CACHE_TTL_MS) {
+    searchCache.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function searchCacheSet(key, value) {
+  if (searchCache.size >= SEARCH_CACHE_MAX) {
+    const oldest = searchCache.keys().next().value;
+    if (oldest !== undefined) searchCache.delete(oldest);
+  }
+  searchCache.set(key, { at: Date.now(), value });
+}
 
 function corsHeaders() {
   return {
@@ -174,7 +185,11 @@ function anthropicSearchTool(model) {
   if (legacy) {
     return { type: 'web_search_20250305', name: 'web_search', max_uses: 5, allowed_callers: ['direct'] };
   }
-  return { type: 'web_search_20260318', name: 'web_search', max_uses: 5 };
+  // The 20260209+ versions default to being called from inside code
+  // execution, which needs the API to provision a sandbox mid-turn and can
+  // pause the turn. This proxy streams one response and cannot resume a
+  // paused turn, so direct calling is pinned instead.
+  return { type: 'web_search_20260318', name: 'web_search', max_uses: 5, allowed_callers: ['direct'] };
 }
 
 function safeParseArgs(raw) {
@@ -1194,24 +1209,6 @@ export default {
     }
 
     if (request.method === 'GET') {
-      const url = new URL(request.url);
-      if (url.pathname === '/usage') {
-        const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
-        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-        let globalUsed = 0;
-        let perIpUsed = 0;
-        try {
-          const g = await env.SEARCH_COUNTER.get(monthKey);
-          globalUsed = g ? parseInt(g, 10) : 0;
-          const p = await env.SEARCH_COUNTER.get(monthKey + ':' + ip);
-          perIpUsed = p ? parseInt(p, 10) : 0;
-        } catch (e) { console.error('KV USAGE READ FAILED:', e.message); }
-        return jsonResponse({
-          month: monthKey.slice(7),
-          perIp: { used: perIpUsed, limit: IP_CAP },
-          global: { used: globalUsed, limit: MONTHLY_CAP },
-        }, 200);
-      }
       return jsonResponse({ error: { message: 'Method not allowed. Use POST.' } }, 405);
     }
 
@@ -1233,7 +1230,7 @@ export default {
       return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
     }
 
-    const { provider, model, apiKey, messages, temperature, max_tokens, baseURL, web_search, searchMode: rawSearchMode, effort, tools: rawTools } = body;
+    const { provider, model, apiKey, messages, temperature, max_tokens, baseURL, searchMode: rawSearchMode, searchBackend: rawSearchBackend, searchDepth: rawSearchDepth, tavilyKey: rawTavilyKey, effort, tools: rawTools } = body;
 
     if (!provider) return jsonResponse({ error: { message: 'Missing provider' } }, 400);
     if (!model) return jsonResponse({ error: { message: 'Missing model' } }, 400);
@@ -1246,172 +1243,267 @@ export default {
     // below targets the last user message, which in an agent run is a tool result.
     const searchMode = agentTools
       ? 'off'
-      : (rawSearchMode === 'on' || rawSearchMode === 'off' || rawSearchMode === 'auto' ? rawSearchMode : (web_search ? 'on' : 'auto'));
+      : (rawSearchMode === 'on' || rawSearchMode === 'off' || rawSearchMode === 'auto' ? rawSearchMode : 'auto');
+    const searchBackend = rawSearchBackend === 'tavily' ? 'tavily' : 'auto';
+    const searchDepth = rawSearchDepth === 'basic' || rawSearchDepth === 'advanced' ? rawSearchDepth : 'auto';
+    const tavilyKey = typeof rawTavilyKey === 'string' ? rawTavilyKey.trim() : '';
     const effortTier = typeof effort === 'string' && effort ? effort : null;
 
     var searchResults = '';
     var searchEvent = null;
 
     const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-    const lastUserText = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
+    const lastUserText = !lastUserMsg
+      ? ''
+      : (typeof lastUserMsg.content === 'string'
+        ? lastUserMsg.content
+        : (Array.isArray(lastUserMsg.content)
+          ? lastUserMsg.content.filter((p) => p && p.type === 'text' && typeof p.text === 'string').map((p) => p.text).join(' ')
+          : ''));
 
-    const groqNative = provider === 'groq' && (model.indexOf('groq/') === 0 || /^openai\/gpt-oss-(20b|120b)$/.test(model));
-    const isNativeSearch = provider === 'anthropic' || provider === 'google' || provider === 'openrouter' || groqNative;
+    const nativeSearchProvider = provider === 'anthropic' || provider === 'google' || provider === 'openrouter';
+    const forceTavily = searchBackend === 'tavily';
+    const useTavily = !nativeSearchProvider || forceTavily;
 
-    if (!isNativeSearch && searchMode !== 'off') {
-      const force = searchMode === 'on';
-      if (force || shouldAutoSearch(lastUserText)) {
-        const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
-        const originAllowed = !reqOrigin || allowedOrigins(env).some(function(o) { return reqOrigin.indexOf(o) === 0; });
-        if (originAllowed) {
-          const monthKey = 'tavily:' + new Date().toISOString().slice(0, 7);
-          const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-          const ipKey = monthKey + ':' + ip;
-          let counter = 0;
-          let ipCounter = 0;
-          let counterReadFailed = false;
-          try {
-            const val = await env.SEARCH_COUNTER.get(monthKey);
-            counter = val ? parseInt(val, 10) : 0;
-            const ipVal = await env.SEARCH_COUNTER.get(ipKey);
-            ipCounter = ipVal ? parseInt(ipVal, 10) : 0;
-          } catch (e) {
-            // Both counters are still 0 here, which would wave every request
-            // through and disable the spend caps entirely for as long as KV is
-            // unhappy. A cost control has to fail closed.
-            counterReadFailed = true;
-            console.error('KV READ FAILED:', e.message);
-          }
-          if (counterReadFailed) {
-            searchEvent = { search: { error: 'Search temporarily unavailable (usage counter unreachable).' } };
-          } else
-          if (counter >= MONTHLY_CAP) {
-            console.error('TAVILY CAP HIT:', monthKey, counter);
-            searchEvent = { search: { error: 'Monthly search cap reached (' + MONTHLY_CAP + ').' } };
-          } else if (ipCounter >= IP_CAP) {
-            console.error('TAVILY IP CAP HIT:', ipKey, ipCounter);
-            searchEvent = { search: { error: 'Monthly search limit reached (' + IP_CAP + ' per IP).' } };
-          } else {
-            const queries = buildSearchQueries(lastUserText);
-            if (queries.length) {
-              const outcomes = await Promise.all(queries.map(function(q) {
-                return runTavilySearch(q, env.TAVILY_API_KEY).then(function(data) {
-                  return data ? { data: data } : { error: 'Search provider error (check TAVILY_API_KEY).' };
-                }).catch(function(e) {
-                  console.error('TAVILY THREW:', e.message);
-                  return { error: 'Search failed: ' + (e.message || 'unknown error') };
-                });
-              }));
-              const merged = [];
-              const seenUrls = new Set();
-              let searchSummary = '';
-              for (var oi = 0; oi < outcomes.length; oi++) {
-                if (!outcomes[oi].data) continue;
-                if (outcomes[oi].data.answer && !searchSummary) {
-                  searchSummary = String(outcomes[oi].data.answer).slice(0, 1400);
-                }
-                var dataResults = outcomes[oi].data.results || [];
-                for (var ri = 0; ri < dataResults.length; ri++) {
-                  var r = dataResults[ri];
-                  if (!r || !r.url || seenUrls.has(r.url)) continue;
-                  seenUrls.add(r.url);
-                  merged.push(r);
-                  if (merged.length >= 10) break;
-                }
-              }
-              ctx.waitUntil(
-                (async function() {
-                  try {
-                    await env.SEARCH_COUNTER.put(monthKey, String(counter + queries.length), { expirationTtl: 3456000 });
-                    await env.SEARCH_COUNTER.put(ipKey, String(ipCounter + queries.length), { expirationTtl: 3456000 });
-                  }
-                  catch (e) { console.error('KV WRITE FAILED:', e.message); }
-                })()
-              );
-              if (merged.length) {
-                const sources = merged.map(function(r) {
-                  return {
-                    title: (r.title || 'Untitled').slice(0, 160),
-                    url: r.url || '',
-                    date: (r.published_date || '').slice(0, 10),
-                    snippet: (r.content || '').slice(0, 240),
-                  };
-                });
-                searchEvent = { search: { query: queries[0], sources: sources } };
-                searchResults = 'Web search results (current, sourced):\n\n' +
-                  (searchSummary ? 'Search summary:\n' + searchSummary + '\n\n' : '') +
-                  merged.map(function(r, i) {
-                    var entry = '[' + (i + 1) + '] ' + (r.title || 'Untitled');
-                    if (r.url) entry += '\n   Source: ' + r.url;
-                    if (r.published_date) entry += '\n   Date: ' + r.published_date.slice(0, 10);
-                    entry += '\n   ' + (r.content || '');
-                    return entry;
-                  }).join('\n\n') +
-                  '\n\nAnswer the user query using these results. Cite sources inline as [1], [2], etc. Prefer recent results for time-sensitive questions. If the results do not cover the question, say so clearly instead of guessing.';
-              } else {
-                var failedOutcome = null;
-                for (var ei = 0; ei < outcomes.length; ei++) { if (outcomes[ei].error) { failedOutcome = outcomes[ei].error; break; } }
-                searchEvent = { search: { error: failedOutcome || 'No web results found.' } };
-              }
-            } else {
-              searchEvent = { search: { error: 'No query provided for search.' } };
-            }
-          }
+    // A search is wanted when the mode is explicit, or when the auto
+    // heuristic recognises a time-sensitive query.
+    const searchRequested = searchMode === 'on' || (searchMode === 'auto' && shouldAutoSearch(lastUserText));
+
+    if (useTavily && searchMode !== 'off' && searchRequested) {
+      if (!tavilyKey) {
+        searchEvent = { search: { error: 'No Tavily API key configured. Add one in Settings to use web search.', code: 'no_key' } };
+      } else {
+        const plan = buildSearchPlan(lastUserText, searchDepth);
+        if (!plan) {
+          searchEvent = { search: { error: 'No query provided for search.', code: 'no_query' } };
         } else {
-          console.error('SEARCH ORIGIN BLOCKED:', reqOrigin);
-          searchEvent = { search: { error: 'Search blocked for this origin.' } };
+          const cacheKey = searchCacheKey(plan.depth, plan.topic, plan.timeRange, plan.query);
+          let curated = searchCacheGet(cacheKey);
+          const cached = !!curated;
+          if (!curated) {
+            const outcomes = [await runTavilySearch(plan.query, tavilyKey, plan)];
+            const firstCount = outcomes[0].data && Array.isArray(outcomes[0].data.results) ? outcomes[0].data.results.length : 0;
+            if (firstCount < 3 && plan.alternate) {
+              outcomes.push(await runTavilySearch(plan.alternate, tavilyKey, Object.assign({}, plan, { depth: 'basic' })));
+            }
+            curated = curateSearchResults(outcomes);
+            if (curated.items.length) searchCacheSet(cacheKey, curated);
+          }
+          if (curated.items.length) {
+            searchEvent = {
+              search: {
+                query: plan.query,
+                sources: curated.items.map(function(r) {
+                  return { title: r.title, url: r.url, domain: r.domain, date: r.date, snippet: r.snippet };
+                }),
+                credits: cached ? 0 : curated.credits,
+                depth: plan.depth,
+                cached: cached,
+              },
+            };
+            searchResults = buildSearchContext(curated.items);
+          } else {
+            searchEvent = { search: curated.error || { error: 'No web results found.', code: 'no_results' } };
+          }
         }
       }
     }
 
-    async function runTavilySearch(query, apiKey) {
+    async function runTavilySearch(query, apiKey, plan) {
+      const controller = new AbortController();
+      const timer = setTimeout(function() { controller.abort(); }, 12000);
       const body = {
-        api_key: apiKey,
         query: query,
-        search_depth: 'advanced',
-        max_results: 8,
-        include_answer: true,
+        search_depth: plan.depth,
+        chunks_per_source: plan.depth === 'advanced' ? 3 : 2,
+        max_results: plan.depth === 'advanced' ? 6 : 8,
+        topic: plan.topic,
+        include_answer: false,
         include_raw_content: false,
+        include_published_date: true,
+        include_usage: true,
+        safe_search: true,
       };
-      if (/(news|latest|today|tonight|breaking|released|launched|announced|update|updated|this week|this month|recap|roundup|score|price|stock|election|weather)/i.test(query)) {
-        body.topic = 'news';
-        body.days = 7;
+      if (plan.timeRange) body.time_range = plan.timeRange;
+      try {
+        const res = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + apiKey,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          const errBody = (await res.text()).slice(0, 300);
+          console.error('TAVILY FAILED:', res.status, errBody);
+          return describeTavilyError(res.status);
+        }
+        const data = await res.json();
+        return {
+          data: data,
+          credits: data && data.usage && typeof data.usage.credits === 'number' ? data.usage.credits : 0,
+        };
+      } catch (e) {
+        if (e && e.name === 'AbortError') return { error: 'Web search timed out.', code: 'timeout' };
+        console.error('TAVILY THREW:', e && e.message);
+        return { error: 'Web search failed: ' + ((e && e.message) || 'network error'), code: 'network' };
+      } finally {
+        clearTimeout(timer);
       }
-      const res = await fetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const errBody = (await res.text()).slice(0, 300);
-        console.error('TAVILY FAILED:', res.status, errBody);
-        return null;
-      }
-      return res.json();
     }
 
-    function buildSearchQueries(raw) {
-      const cleaned = String(raw || '').replace(/\[Attached:[^\]]*\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 400);
-      if (!cleaned) return [];
-      const compact = cleaned
-        .replace(/\b(what|whats|what's|whatre|what're|who|whos|who's|wheres|where|when|why|how|is|are|was|were|do|does|did|can|could|would|should|shall|will|tell me|explain|describe|about|please|the|a|an|and|or|of|to|for|with|on|in|at|by|me|my|i want|i need|know|think|dont|don't|doesnt|doesn't)\b/gi, ' ')
+    function describeTavilyError(status) {
+      if (status === 401 || status === 403) return { error: 'Tavily rejected your API key. Check it in Settings.', code: 'auth' };
+      if (status === 429) return { error: 'Tavily rate limit reached. Try again in a moment.', code: 'rate_limit' };
+      if (status === 432 || status === 433) return { error: 'Tavily plan or credit limit reached.', code: 'plan_limit' };
+      if (status === 400 || status === 422) return { error: 'Tavily rejected the search request.', code: 'bad_request' };
+      if (status >= 500) return { error: 'Tavily is temporarily unavailable.', code: 'provider' };
+      return { error: 'Tavily request failed (HTTP ' + status + ').', code: 'provider' };
+    }
+
+    function buildSearchPlan(raw, depthPref) {
+      const cleaned = String(raw || '').replace(/\[Attached:[^\]]*\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+      if (!cleaned) return null;
+      const alternate = focusedSearchQuery(cleaned);
+      const freshness = detectFreshness(cleaned);
+      const depth = depthPref === 'advanced'
+        ? 'advanced'
+        : depthPref === 'basic'
+          ? 'basic'
+          : (isComplexQuery(cleaned) ? 'advanced' : 'basic');
+      return {
+        query: cleaned,
+        alternate: alternate && alternate !== cleaned ? alternate : '',
+        depth: depth,
+        topic: freshness.topic,
+        timeRange: freshness.timeRange,
+      };
+    }
+
+    function focusedSearchQuery(text) {
+      const compact = text
+        .replace(/^(please|hey|hi|hello|can you|could you|would you|tell me|explain|describe|what is|what's|whats|who is|who's|where is|when is|why is|how do|how does|how can|how to)\b/i, ' ')
+        .replace(/\b(the|a|an|and|or|of|to|for|with|on|in|at|by|from|about|me|my|i|we|you|is|are|was|were|do|does|did|can|could|would|should|please)\b/gi, ' ')
         .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 200);
-      if (cleaned.length > 20 && compact && compact.length >= 6 && compact !== cleaned) return [cleaned, compact];
-      return [cleaned];
+        .trim();
+      return compact.length >= 6 ? compact.slice(0, 160) : '';
+    }
+
+    function isComplexQuery(text) {
+      const words = text.split(/\s+/).length;
+      return words > 30 || text.length > 200 ||
+        /\b(compare|comparison|versus|difference between|pros and cons|trade-?offs?|analy[sz]e|research|benchmark|review of)\b/i.test(text);
+    }
+
+    function detectFreshness(text) {
+      const lower = text.toLowerCase();
+      // An explicit window is honoured. A news topic already biases toward
+      // recent coverage, so forcing one there would drop older-but-relevant
+      // articles that the query asked for.
+      let timeRange = '';
+      if (/\b(today|tonight|right now|currently|this morning|this afternoon)\b/.test(lower)) timeRange = 'day';
+      else if (/\b(this week|yesterday|last week|past week)\b/.test(lower)) timeRange = 'week';
+      else if (/\b(this month|last month|past month)\b/.test(lower)) timeRange = 'month';
+      else if (/\b(this year|last year|past year)\b/.test(lower)) timeRange = 'year';
+      const finance = /\b(stock|stocks|share price|market cap|earnings|crypto|bitcoin|ethereum|exchange rate)\b/.test(lower);
+      if (finance) return { topic: 'finance', timeRange: timeRange };
+      const news = /\b(news|breaking|announced|announcement|launched|released|election|weather|forecast)\b/.test(lower);
+      if (news) return { topic: 'news', timeRange: timeRange };
+      return { topic: 'general', timeRange: timeRange };
+    }
+
+    function normalizeSearchUrl(raw) {
+      try {
+        const u = new URL(raw);
+        u.hash = '';
+        const drop = [];
+        u.searchParams.forEach(function(v, k) {
+          if (/^(utm_|gclid$|fbclid$|mc_cid$|mc_eid$|ref$|ref_src$)/i.test(k)) drop.push(k);
+        });
+        for (let i = 0; i < drop.length; i++) u.searchParams.delete(drop[i]);
+        return u.toString().replace(/\/$/, '');
+      } catch (_) {
+        return String(raw || '').trim();
+      }
+    }
+
+    function curateSearchResults(outcomes) {
+      const items = [];
+      const seen = new Set();
+      const perDomain = {};
+      let credits = 0;
+      let firstError = null;
+      for (let oi = 0; oi < outcomes.length; oi++) {
+        const o = outcomes[oi];
+        if (!o) continue;
+        if (typeof o.credits === 'number') credits += o.credits;
+        if (!o.data) {
+          if (o.error && !firstError) firstError = { error: o.error, code: o.code || 'provider' };
+          continue;
+        }
+        const results = Array.isArray(o.data.results) ? o.data.results : [];
+        for (let ri = 0; ri < results.length; ri++) {
+          const r = results[ri];
+          if (!r || !r.url) continue;
+          const normalized = normalizeSearchUrl(r.url);
+          if (!normalized || seen.has(normalized)) continue;
+          let domain = '';
+          try { domain = new URL(normalized).hostname.replace(/^www\./, ''); } catch (_) { domain = ''; }
+          if (domain && (perDomain[domain] || 0) >= 2) continue;
+          seen.add(normalized);
+          if (domain) perDomain[domain] = (perDomain[domain] || 0) + 1;
+          items.push({
+            title: String(r.title || 'Untitled').slice(0, 160),
+            url: r.url,
+            domain: domain,
+            date: String(r.published_date || '').slice(0, 10),
+            snippet: String(r.content || '').slice(0, 240),
+            content: String(r.content || '').slice(0, 1500),
+            score: Number(r.score) || 0,
+          });
+          if (items.length >= 8) break;
+        }
+        if (items.length >= 8) break;
+      }
+      items.sort(function(a, b) { return b.score - a.score; });
+      return { items: items, credits: credits, error: firstError };
+    }
+
+    function buildSearchContext(items) {
+      const budget = 10000;
+      const perSource = Math.max(500, Math.min(1200, Math.floor((budget - 600) / Math.max(items.length, 1))));
+      const blocks = items.map(function(r, i) {
+        let entry = '[' + (i + 1) + '] ' + r.title;
+        if (r.url) entry += '\n   Source: ' + r.url;
+        if (r.date) entry += '\n   Date: ' + r.date;
+        entry += '\n   ' + String(r.content || r.snippet || '').slice(0, perSource);
+        return entry;
+      });
+      return 'Web search results (current, sourced):\n\n' + blocks.join('\n\n') +
+        '\n\nAnswer the user query using these results. Cite sources inline as [1], [2], etc. Do not mention that you used web search unless the user asks. Prefer recent results for time-sensitive questions. If the results do not cover the question, say so clearly instead of guessing.';
     }
 
     function shouldAutoSearch(text) {
       const q = String(text || '').replace(/\[Attached:[^\]]*\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 600);
       if (!q) return false;
+      if (q.split(/\s+/).length <= 3 && /^(hi|hello|hey|thanks|thank you|ok|okay|cool|nice|yes|no|continue|go on)\b/i.test(q)) return false;
       const lower = q.toLowerCase();
       const TIME = /\b(today|tonight|yesterday|tomorrow|this week|this month|this year|right now|currently|now)\b/;
-      const FRESH = /\b(latest|recent|recently|breaking|news|update|updates|updated|announced|announcement|launched|launch|released|release)\b/;
-      const VOLATILE = /\b(price|prices|pricing|cost|stock|stocks|share price|score|scores|result|results|election|elections|weather|forecast|odds|ranking|rankings)\b/;
+      const FRESH = /\b(latest|recent|recently|breaking|news|announced|announcement|launched|launch|released|release)\b/;
+      const VOLATILE = /\b(price|prices|pricing|cost|stock|stocks|share price|score|scores|election|elections|weather|forecast|odds|ranking|rankings)\b/;
       const DATES = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\b|\b20\d\d\b|\bas of\b/;
       const STEMS = /\b(who won|what happened|how is|how are|where is|what's the score|what is the score|what's new|whats new)\b/;
-      return TIME.test(lower) || FRESH.test(lower) || VOLATILE.test(lower) || DATES.test(lower) || STEMS.test(lower);
+      // Deliberately narrow. A coding client asks "how do I", "fix this error"
+      // and "what is the best way to" constantly, and each of those would burn
+      // a Tavily credit on a question the model can answer on its own. These
+      // are the intents that are almost always a lookup.
+      const COMPARE = /\b(vs\.?|versus|compare|comparison|difference between|better than|alternative to|alternatives to)\b/;
+      const RECOMMEND = /\b(recommend|recommended|worth it|should i buy)\b/;
+      const LOOKUP = /\b(who is|who was|when did|when was|how old is)\b/;
+      return TIME.test(lower) || FRESH.test(lower) || VOLATILE.test(lower) || DATES.test(lower) ||
+        STEMS.test(lower) || COMPARE.test(lower) || RECOMMEND.test(lower) || LOOKUP.test(lower);
     }
 
     const temp = typeof temperature === 'number' ? temperature : 0.7;
@@ -1435,13 +1527,25 @@ export default {
     }
     if (searchResults) {
       for (var si = safeMessages.length - 1; si >= 0; si--) {
-        if (safeMessages[si].role === 'user') {
-          var uc = safeMessages[si].content;
-          if (typeof uc === 'string') {
-            safeMessages[si].content = searchResults + '\n\n=== USER QUERY ===\n\n' + uc;
+        if (safeMessages[si].role !== 'user') continue;
+        var uc = safeMessages[si].content;
+        if (typeof uc === 'string') {
+          safeMessages[si].content = searchResults + '\n\n=== USER QUERY ===\n\n' + uc;
+        } else if (Array.isArray(uc)) {
+          // A message with attachments is a multipart array. Injecting into the
+          // array itself keeps the images intact; the old string-only check
+          // silently dropped search results for every attachment turn.
+          var textPart = null;
+          for (var pi = 0; pi < uc.length; pi++) {
+            if (uc[pi] && uc[pi].type === 'text' && typeof uc[pi].text === 'string') { textPart = uc[pi]; break; }
           }
-          break;
+          if (textPart) {
+            textPart.text = searchResults + '\n\n=== USER QUERY ===\n\n' + textPart.text;
+          } else {
+            uc.unshift({ type: 'text', text: searchResults + '\n\n=== USER QUERY ===\n\n' });
+          }
         }
+        break;
       }
     }
 
@@ -1465,8 +1569,8 @@ export default {
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
-          case 'cerebras': {
-            const url = PROVIDER_URLS.cerebras;
+          case 'deepinfra': {
+            const url = PROVIDER_URLS.deepinfra;
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
@@ -1483,12 +1587,9 @@ export default {
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
-          case 'groq': {
-            const url = PROVIDER_URLS.groq;
+          case 'gmicloud': {
+            const url = PROVIDER_URLS.gmicloud;
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
-            if (searchMode !== 'off' && /^openai\/gpt-oss-(20b|120b)$/.test(model)) {
-              reqBody.tools = (reqBody.tools || []).concat([{ type: 'browser_search' }]);
-            }
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
@@ -1507,8 +1608,12 @@ export default {
           }
           case 'xai': {
             const url = PROVIDER_URLS.xai;
+            // xAI removed live search: `search_parameters` now returns 410 Gone,
+            // and the Chat Completions endpoint accepts function tools only, so
+            // the built-in `web_search` tool is not available here either. xAI
+            // searches through Tavily like the other OpenAI-compatible
+            // providers.
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
-            if (searchMode === 'on') reqBody.search_parameters = { mode: 'on' };
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
@@ -1516,15 +1621,16 @@ export default {
             const url = PROVIDER_URLS.openrouter;
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, null, agentTools);
             if (effortTier) reqBody.reasoning = { effort: effortTier };
-            if (searchMode !== 'off') {
+            const nativeSearch = !forceTavily && searchMode !== 'off';
+            if (nativeSearch) {
               reqBody.tools = (reqBody.tools || []).concat([{ type: 'openrouter:web_search', parameters: { max_results: 5, max_uses: 5 } }]);
             }
-            await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer, searchMode !== 'off');
+            await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer, nativeSearch);
             break;
           }
           case 'anthropic': {
             const effortBudget = ANTHROPIC_EFFORT_BUDGET[effortTier] || null;
-            const searchTool = searchMode !== 'off' ? anthropicSearchTool(model) : null;
+            const searchTool = !forceTavily && searchMode !== 'off' ? anthropicSearchTool(model) : null;
             const reqBody = buildAnthropicRequest(model, safeMessages, temp, maxOut, effortBudget, searchTool, agentTools);
             await streamAnthropic(apiKey, reqBody, encoder, writer);
             break;
@@ -1532,7 +1638,7 @@ export default {
           case 'google': {
             const effortBudget = GOOGLE_EFFORT_BUDGET[effortTier] || null;
             const reqBody = buildGoogleRequest(model, safeMessages, temp, maxOut, effortBudget, agentTools);
-            const useNativeSearch = searchMode !== 'off' && model.indexOf('gemini') === 0;
+            const useNativeSearch = !forceTavily && searchMode !== 'off' && model.indexOf('gemini') === 0;
             if (useNativeSearch) {
               if (!reqBody.tools) reqBody.tools = [{ googleSearch: {} }];
               else reqBody.tools.push({ googleSearch: {} });

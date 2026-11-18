@@ -830,11 +830,12 @@
       display: block;
     }
 
-    /* Code preview modal */
-    .code-preview-modal {
-      max-width: 840px;
-      width: 94vw;
-      height: 85vh;
+    /* Beats .modal's 440px cap. A live page needs a reading width, not a settings card. */
+    .modal.code-preview-modal {
+      width: min(1120px, calc(100vw - 48px));
+      max-width: 1120px;
+      height: min(860px, calc(100vh - 64px));
+      max-height: calc(100vh - 64px);
     }
 
     /* Code mode pill button */

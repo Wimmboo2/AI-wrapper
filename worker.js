@@ -17,34 +17,62 @@ const PROVIDER_URLS = {
 
 // Tavily search cache. The Worker is stateless across restarts, so this is a
 // best-effort in-memory cache: repeated queries in the same isolate reuse the
-// results instead of charging the user's Tavily account again. No KV, no disk,
-// no secrets. Queries are hashed so raw prompts are not kept as Map keys.
+// results instead of charging the same Tavily account again. No KV, no disk.
+// Each entry is scoped to a hash of that caller's Tavily key, and the key
+// includes the query text, so two prompts cannot collide and one account
+// cannot read another's results. The raw key is never stored. The map is
+// capped and evicted least-recently-used.
 const SEARCH_CACHE_TTL_MS = 15 * 60 * 1000;
 const SEARCH_CACHE_MAX = 50;
 const searchCache = new Map();
 
-function searchCacheKey(depth, topic, timeRange, query) {
-  let h = 5381;
-  for (let i = 0; i < query.length; i++) h = ((h * 33) ^ query.charCodeAt(i)) >>> 0;
-  return depth + '|' + topic + '|' + (timeRange || '') + '|' + h.toString(36);
+async function hashSearchScope(apiKey) {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(apiKey || '')));
+    let hex = '';
+    const bytes = new Uint8Array(digest);
+    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+    return hex;
+  } catch (_) {
+    return '';
+  }
+}
+
+async function searchCacheKey(apiKey, depth, topic, timeRange, query) {
+  const scope = await hashSearchScope(apiKey);
+  if (!scope) return '';
+  return scope + '\n' + depth + '\n' + topic + '\n' + (timeRange || '') + '\n' + query;
 }
 
 function searchCacheGet(key) {
+  if (!key) return null;
   const hit = searchCache.get(key);
   if (!hit) return null;
   if (Date.now() - hit.at > SEARCH_CACHE_TTL_MS) {
     searchCache.delete(key);
     return null;
   }
+  // Refresh recency so a hot query is not the first one evicted.
+  searchCache.delete(key);
+  searchCache.set(key, hit);
   return hit.value;
 }
 
 function searchCacheSet(key, value) {
+  if (!key) return;
+  if (searchCache.has(key)) searchCache.delete(key);
+  const now = Date.now();
   if (searchCache.size >= SEARCH_CACHE_MAX) {
-    const oldest = searchCache.keys().next().value;
-    if (oldest !== undefined) searchCache.delete(oldest);
+    for (const [k, hit] of searchCache) {
+      if (now - hit.at > SEARCH_CACHE_TTL_MS) searchCache.delete(k);
+    }
   }
-  searchCache.set(key, { at: Date.now(), value });
+  while (searchCache.size >= SEARCH_CACHE_MAX) {
+    const oldest = searchCache.keys().next().value;
+    if (oldest === undefined) break;
+    searchCache.delete(oldest);
+  }
+  searchCache.set(key, { at: now, value });
 }
 
 // Never '*'. Echo one concrete origin, or omit the header.
@@ -305,42 +333,69 @@ function expandIPv6(input) {
   return nums;
 }
 
-function embeddedIPv4(hi, lo) {
-  return [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255];
-}
-
 function isBlockedIPv6(input) {
   const groups = expandIPv6(input);
   if (!groups) return true;
   if (groups.every((g) => g === 0)) return true;
   if (groups[7] === 1 && groups.slice(0, 7).every((g) => g === 0)) return true;
-  // ::/96 (deprecated IPv4-compatible) and ::ffff:0:0/96 (IPv4-mapped).
-  if (groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 &&
+  // IPv4-compatible (::/96), IPv4-mapped (::ffff:0:0/96) and IPv4-translated
+  // (::ffff:0:0:0/96). The whole prefix is an alias for an IPv4 address, so
+  // a private, link-local, or CGNAT target can be written here without a
+  // dotted quad. Block the prefix, not only the embedded private ranges.
+  if (groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 &&
+      (groups[4] === 0 || groups[4] === 0xffff) &&
       (groups[5] === 0 || groups[5] === 0xffff)) {
-    const v4 = embeddedIPv4(groups[6], groups[7]);
-    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
+    return true;
   }
-  // 64:ff9b::/96 NAT64. The last 32 bits are an IPv4 address.
-  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0) {
-    const v4 = embeddedIPv4(groups[6], groups[7]);
-    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
-  }
-  // 64:ff9b:1::/48 is the local-use NAT64 prefix.
+  // Well-known NAT64 (64:ff9b::/96) and the local-use prefix (64:ff9b:1::/48).
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0) return true;
   if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) return true;
   // 6to4 (2002::/16) embeds an IPv4 address in the next 32 bits.
-  if (groups[0] === 0x2002) {
-    const v4 = embeddedIPv4(groups[1], groups[2]);
-    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
-  }
+  if (groups[0] === 0x2002) return true;
+  // Discard (100::/64), benchmarking (2001:2::/48), documentation (2001:db8::/32).
   if (groups[0] === 0x100 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0) return true;
   if (groups[0] === 0x2001 && groups[1] === 0x0002 && groups[2] === 0) return true;
   if (groups[0] === 0x2001 && groups[1] === 0xdb8) return true;
+  // ORCHIDv1 (2001:10::/28) and ORCHIDv2 (2001:20::/28).
+  if (groups[0] === 0x2001 && groups[1] >= 0x0010 && groups[1] <= 0x001f) return true;
+  if (groups[0] === 0x2001 && groups[1] >= 0x0020 && groups[1] <= 0x002f) return true;
+  // Teredo (2001::/32).
   if (groups[0] === 0x2001 && groups[1] === 0) return true;
   if (groups[0] >= 0xfc00 && groups[0] <= 0xfdff) return true;
   if (groups[0] >= 0xfe80 && groups[0] <= 0xfebf) return true;
   if (groups[0] >= 0xfec0 && groups[0] <= 0xfeff) return true;
   if ((groups[0] & 0xff00) === 0xff00) return true;
   return false;
+}
+
+// Wildcard DNS that answers with whatever address the name encodes.
+const REBIND_SUFFIXES = ['.nip.io', '.sslip.io', '.xip.io', '.localtest.me', '.lvh.me', '.vcap.me', '.traefik.me'];
+
+function ipv4PartsBlocked(parts) {
+  if (!parts || parts.some((n) => n > 255)) return false;
+  return isBlockedIPv4(parts[0], parts[1], parts[2], parts[3]);
+}
+
+function isRebindHost(host) {
+  for (let i = 0; i < REBIND_SUFFIXES.length; i++) {
+    const suffix = REBIND_SUFFIXES[i];
+    if (host === suffix.slice(1) || host.endsWith(suffix)) return true;
+  }
+  const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\./.exec(host);
+  if (dotted && ipv4PartsBlocked([+dotted[1], +dotted[2], +dotted[3], +dotted[4]])) return true;
+  const dashed = /^(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})\./.exec(host);
+  if (dashed && ipv4PartsBlocked([+dashed[1], +dashed[2], +dashed[3], +dashed[4]])) return true;
+  return false;
+}
+
+// Hex, octal, or short IPv4 the URL parser left as a hostname. A canonical
+// dotted quad never reaches this; parseIPv4 already handled it.
+function isAlternateIPv4(host) {
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) return false;
+  if (!parts.every((p) => /^(0x[0-9a-f]+|\d+)$/i.test(p))) return false;
+  if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && String(+p) === p && +p <= 255)) return false;
+  return true;
 }
 
 function isBlockedHost(hostname) {
@@ -357,6 +412,7 @@ function isBlockedHost(hostname) {
   // A single label is a local search name (localhost already covered, plus
   // "metadata", "router", and similar), not a public API host.
   if (host.indexOf('.') === -1) return true;
+  if (isAlternateIPv4(host) || isRebindHost(host)) return true;
   return false;
 }
 
@@ -1258,11 +1314,25 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
   }
 }
 
+// Gemini ids are one path segment (gemini-3.5-flash-lite). Anything else
+// could change the path, the query, or the host when it is interpolated.
+function googleModelPath(model) {
+  if (typeof model !== 'string') return '';
+  const id = model.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) return '';
+  return encodeURIComponent(id);
+}
+
 async function streamGoogle(model, apiKey, requestBody, encoder, writer, collectGrounding, stream) {
+  const modelId = googleModelPath(model);
+  if (!modelId) {
+    await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Invalid model id' } }) + '\n'));
+    return;
+  }
   const streaming = stream !== false;
   const url = streaming
-    ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`
-    : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    ? `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -1458,6 +1528,10 @@ const SANDBOX_MAX_TIMEOUT = 300;
 const SANDBOX_DEFAULT_TIMEOUT = 120;
 const EXEC_MAX_MS = 60000;
 const OUTPUT_CAP = 32768;
+// A single argv element longer than MAX_ARG_STRLEN (128 KiB) is rejected by
+// the kernel before the shell runs. The inline command is that element, so
+// a large script is uploaded and the command line only names the file.
+const SANDBOX_INLINE_ARG_MAX = 48 * 1024;
 
 // sandboxId and domain are interpolated into a URL, so without these checks
 // /sandbox/exec would be an open proxy to any host the caller names.
@@ -1473,6 +1547,23 @@ function validDomain(d, prov) {
 function envdBase(sandboxId, domain, prov) {
   const host = validDomain(domain, prov) ? domain : prov.defaultDomain;
   return 'https://' + E2B_ENVD_PORT + '-' + sandboxId + '.' + host;
+}
+
+async function writeSandboxFile(base, authHeaders, path, content, signal) {
+  const form = new FormData();
+  const name = path.slice(path.lastIndexOf('/') + 1) || 'omni_run';
+  form.append('file', new Blob([content], { type: 'application/octet-stream' }), name);
+  const headers = {};
+  if (authHeaders['X-API-Key']) headers['X-API-Key'] = authHeaders['X-API-Key'];
+  if (authHeaders['X-Access-Token']) headers['X-Access-Token'] = authHeaders['X-Access-Token'];
+  const res = await fetch(base + '/files?path=' + encodeURIComponent(path) + '&username=user', {
+    method: 'POST',
+    headers,
+    body: form,
+    signal,
+  });
+  if (!res.ok) return { ok: false, status: res.status };
+  return { ok: true };
 }
 
 function connectFrame(obj) {
@@ -1616,13 +1707,17 @@ async function handleSandbox(path, body, corsOrigin) {
     if (!code) return reply({ error: { message: 'Missing code' } }, 400);
     const language = body.language === 'bash' ? 'bash' : 'python';
 
-    // Base64 the payload and decode it inside the sandbox. Model-written code is
-    // full of quotes, newlines and backslashes; this sidesteps shell quoting
-    // entirely without needing a multipart file upload first.
+    // Short scripts are base64'd onto the command line so quotes and newlines
+    // never need shell quoting. A long script would exceed the kernel's
+    // per-argument limit, so it is written to the file and the command only
+    // names that file.
     const encoded = btoa(unescape(encodeURIComponent(code)));
     const file = language === 'bash' ? '/tmp/omni_run.sh' : '/tmp/omni_run.py';
     const runner = language === 'bash' ? 'bash' : 'python3';
-    const script = 'echo ' + encoded + ' | base64 -d > ' + file + ' && ' + runner + ' ' + file;
+    const inline = 'echo ' + encoded + ' | base64 -d > ' + file + ' && ' + runner + ' ' + file;
+    const base = envdBase(sandboxId, body.domain, prov);
+    const authHeaders = { 'X-API-Key': key };
+    if (body.token) authHeaders['X-Access-Token'] = body.token;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(body.timeoutMs || EXEC_MAX_MS, EXEC_MAX_MS));
@@ -1636,6 +1731,16 @@ async function handleSandbox(path, body, corsOrigin) {
     const started = Date.now();
 
     try {
+      let command = inline;
+      if (inline.length > SANDBOX_INLINE_ARG_MAX) {
+        const uploaded = await writeSandboxFile(base, authHeaders, file, code, controller.signal);
+        if (!uploaded.ok) {
+          clearTimeout(timer);
+          return reply({ error: { message: 'Could not upload the script to the sandbox (' + uploaded.status + ').' } }, 502);
+        }
+        command = runner + ' ' + file;
+      }
+
       const headers = {
         'Content-Type': 'application/connect+json',
         'connect-protocol-version': '1',
@@ -1643,11 +1748,11 @@ async function handleSandbox(path, body, corsOrigin) {
       };
       if (body.token) headers['X-Access-Token'] = body.token;
 
-      const res = await fetch(envdBase(sandboxId, body.domain, prov) + '/process.Process/Start', {
+      const res = await fetch(base + '/process.Process/Start', {
         method: 'POST',
         headers,
         body: connectFrame({
-          process: { cmd: '/bin/bash', args: ['-lc', script], envs: {}, cwd: '/home/user' },
+          process: { cmd: '/bin/bash', args: ['-lc', command], envs: {}, cwd: '/home/user' },
         }),
         signal: controller.signal,
       });
@@ -1802,7 +1907,7 @@ export default {
         if (!plan) {
           searchEvent = { search: { error: 'No query provided for search.', code: 'no_query' } };
         } else {
-          const cacheKey = searchCacheKey(plan.depth, plan.topic, plan.timeRange, plan.query);
+          const cacheKey = await searchCacheKey(tavilyKey, plan.depth, plan.topic, plan.timeRange, plan.query);
           let curated = searchCacheGet(cacheKey);
           const cached = !!curated;
           if (!curated) {

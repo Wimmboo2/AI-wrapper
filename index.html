@@ -3004,6 +3004,21 @@
 
     .toast-text { flex: 1; }
 
+    .toast-action {
+      border: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      flex: none;
+    }
+
+    .toast-action:hover { background: rgba(255,255,255,0.08); }
+    .toast-action[hidden] { display: none; }
+
     .toast-close {
       width: 24px;
       height: 24px;
@@ -3734,7 +3749,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" id="resetSettingsBtn">Reset</button>
-        <button class="btn btn-primary" id="saveSettingsBtn">Done</button>
+        <button class="btn btn-primary" id="saveSettingsBtn">Save</button>
       </div>
     </div>
   </div>
@@ -3760,6 +3775,7 @@
 
   <div class="toast" id="toast" role="alert">
     <span class="toast-text" id="toastText"></span>
+    <button class="toast-action" id="toastAction" type="button" hidden>Undo</button>
     <button class="toast-close" id="toastClose" aria-label="Dismiss" type="button">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
     </button>
@@ -4462,16 +4478,42 @@
         return chat;
       }
 
+      var chatDeleteUndo = null;
+
+      function finalizeChatDelete() {
+        chatDeleteUndo = null;
+      }
+
+      function undoChatDelete() {
+        var pending = chatDeleteUndo;
+        chatDeleteUndo = null;
+        if (!pending) return;
+        var at = Math.max(0, Math.min(pending.index, chats.length));
+        chats.splice(at, 0, pending.chat);
+        if (pending.wasActive) activeChatId = pending.chat.id;
+        if (!pending.chat.incognito) persistChats(pending.chat);
+        renderAll();
+        showToast('Chat restored', 'info');
+      }
+
       function deleteChat(id) {
+        if (chatDeleteUndo && chatDeleteUndo.chat.id !== id) chatDeleteUndo = null;
         if (streamControllers[id]) { streamControllers[id].abort(); delete streamControllers[id]; }
         killSandbox(id);
-        chats = chats.filter(function(c) { return c.id !== id; });
-        if (!incognito && activeChatId === id) {
-          activeChatId = chats.length ? chats[0].id : null;
+        var index = -1;
+        for (var i = 0; i < chats.length; i++) {
+          if (chats[i].id === id) { index = i; break; }
         }
+        if (index === -1) return;
+        var removed = chats[index];
+        var wasActive = !incognito && activeChatId === id;
+        chats.splice(index, 1);
+        if (wasActive) activeChatId = chats.length ? chats[0].id : null;
         dbDeleteChat(id);
+        chatDeleteUndo = { chat: removed, index: index, wasActive: wasActive };
         persistChats();
         renderAll();
+        showToast('Chat deleted', 'info', { label: 'Undo', run: undoChatDelete, keepsUndo: true });
       }
 
       function togglePinChat(id) {
@@ -5552,6 +5594,9 @@
         chat._branchActive[parentUserIdx] = chat._branches[parentUserIdx].length;
         chat.messages = chat.messages.slice(0, parentUserIdx);
         chat.metrics = null;
+        // The reply's siblings stay on this user turn. Branches and forks for
+        // every later turn belonged to the messages just removed.
+        normalizeThreadBranches(chat, parentUserIdx);
         if (!chat.incognito) persistChats(chat);
         composerInput.value = parentUser.content || '';
         autoResize();
@@ -5703,6 +5748,80 @@
         });
       }
 
+      // Drop branch and fork entries that no longer point at a user turn in
+      // this thread. keepBranchAt preserves the turn whose reply is about to
+      // be generated, because that user message is not in the array yet.
+      function normalizeThreadBranches(chat, keepBranchAt) {
+        if (!chat) return;
+        var msgs = Array.isArray(chat.messages) ? chat.messages : [];
+        var len = msgs.length;
+        function wanted(k, kind) {
+          if (isNaN(k) || k < 0) return false;
+          if (keepBranchAt != null && k === keepBranchAt) return true;
+          if (k >= len || !msgs[k] || msgs[k].role !== 'user') return false;
+          if (kind === 'fork') return true;
+          var reply = msgs[k + 1];
+          return !!(reply && reply.role === 'assistant');
+        }
+        function prune(name, kind) {
+          var obj = chat[name];
+          if (!obj || typeof obj !== 'object') return;
+          Object.keys(obj).forEach(function(key) {
+            if (!wanted(Number(key), kind)) delete obj[key];
+          });
+        }
+        prune('_branches', 'branch');
+        prune('_branchActive', 'branch');
+        prune('_liveReplies', 'branch');
+        prune('_forks', 'fork');
+        prune('_forkActive', 'fork');
+        prune('_liveForks', 'fork');
+        if (chat._branches) {
+          Object.keys(chat._branches).forEach(function(k) {
+            if (!Array.isArray(chat._branches[k]) || !chat._branches[k].length) {
+              delete chat._branches[k];
+              if (chat._branchActive) delete chat._branchActive[k];
+              if (chat._liveReplies) delete chat._liveReplies[k];
+            }
+          });
+        }
+        if (chat._branchActive) {
+          Object.keys(chat._branchActive).forEach(function(k) {
+            var arr = chat._branches && chat._branches[k];
+            if (!arr) { delete chat._branchActive[k]; return; }
+            var n = Number(chat._branchActive[k]);
+            if (isNaN(n) || n < 0 || n > arr.length) chat._branchActive[k] = arr.length;
+          });
+        }
+        if (chat._liveReplies) {
+          Object.keys(chat._liveReplies).forEach(function(k) {
+            if (!chat._branches || !chat._branches[k]) delete chat._liveReplies[k];
+          });
+        }
+        if (chat._forks) {
+          Object.keys(chat._forks).forEach(function(k) {
+            if (!Array.isArray(chat._forks[k]) || !chat._forks[k].length) {
+              delete chat._forks[k];
+              if (chat._forkActive) delete chat._forkActive[k];
+              if (chat._liveForks) delete chat._liveForks[k];
+            }
+          });
+        }
+        if (chat._forkActive) {
+          Object.keys(chat._forkActive).forEach(function(k) {
+            var arr = chat._forks && chat._forks[k];
+            if (!arr) { delete chat._forkActive[k]; return; }
+            var n = Number(chat._forkActive[k]);
+            if (isNaN(n) || n < 0 || n > arr.length) chat._forkActive[k] = arr.length;
+          });
+        }
+        if (chat._liveForks) {
+          Object.keys(chat._liveForks).forEach(function(k) {
+            if (!chat._forks || !chat._forks[k]) delete chat._liveForks[k];
+          });
+        }
+      }
+
       function captureFork(chat, idx) {
         var messages;
         try { messages = JSON.parse(JSON.stringify(chat.messages.slice(idx))); }
@@ -5736,6 +5855,7 @@
           var part = copy[name] || {};
           Object.keys(part).forEach(function(k) { chat[name][k] = part[k]; });
         });
+        normalizeThreadBranches(chat);
       }
 
       function messageAutoTitle(text) {
@@ -5808,6 +5928,20 @@
         dropKeyed(chat._forks, msgIndex, 'gt');
         dropKeyed(chat._forkActive, msgIndex, 'gt');
         dropKeyed(chat._liveForks, msgIndex, 'gt');
+        normalizeThreadBranches(chat);
+      }
+
+      // An in-place edit of a reply has to land in the active sibling, or the
+      // next branch cycle puts the pre-edit text back.
+      function rememberActiveBranchEdit(chat, assistantIdx) {
+        var parent = assistantIdx - 1;
+        if (!chat || parent < 0 || !chat._branches || !chat._branches[parent]) return;
+        var branches = chat._branches[parent];
+        if (!branches.length) return;
+        var active = (chat._branchActive && chat._branchActive[parent] != null) ? Number(chat._branchActive[parent]) : branches.length;
+        if (isNaN(active) || active < 0 || active > branches.length) active = branches.length;
+        if (active < branches.length) branches[active] = snapshotBranch(chat.messages[assistantIdx]);
+        else if (chat._liveReplies) delete chat._liveReplies[parent];
       }
 
       function cycleMessageFork(msgIndex, direction) {
@@ -5947,6 +6081,7 @@
             sendMessage({ skipUserPush: true });
           } else {
             msg.content = next;
+            rememberActiveBranchEdit(chat, msgIndex);
             if (!chat.incognito) persistChats(chat);
             renderMessages();
             placeComposer();
@@ -6878,9 +7013,71 @@
         }
       }
 
+      var settingsSnapshot = null;
+
+      function cloneSettings(value) {
+        try { return JSON.parse(JSON.stringify(value)); }
+        catch (e) { return value; }
+      }
+
       function openSettings() {
+        settingsSnapshot = cloneSettings(settings);
         syncSettingsUI();
         settingsModal.classList.add('open');
+      }
+
+      function settingsDraftDirty() {
+        if (!settingsSnapshot) return false;
+        var snap = settingsSnapshot;
+        try {
+          if (JSON.stringify(settings) !== JSON.stringify(snap)) return true;
+        } catch (e) { return true; }
+        if ($('settingEndpoint').value.trim() !== (snap.apiEndpoint || '')) return true;
+        if ($('settingProxyKey').value.trim() !== (snap.proxyKey || '')) return true;
+        var snapKey = (snap.apiKeys && (snap.apiKeys[snap.provider] || snap.apiKey)) || '';
+        if ($('settingApiKey').value.trim() !== snapKey) return true;
+        if ($('settingTavilyKey').value.trim() !== (snap.tavilyKey || '')) return true;
+        if (Number($('settingTemp').value) !== Number(snap.temperature)) return true;
+        if (Number($('settingMaxTokens').value) !== Number(snap.maxTokens)) return true;
+        if (!!$('settingThinking').checked !== !!snap.thinking) return true;
+        if ($('settingCustomURL').value.trim() !== (snap.customBaseURL || '')) return true;
+        if ($('settingSystemPrompt').value.trim() !== (snap.systemPrompt || '')) return true;
+        if (String($('settingAgentSteps').value) !== String(snap.agentMaxSteps)) return true;
+        var sandboxId = pendingSandboxProvider || snap.sandboxProvider || 'e2b';
+        var storedSandbox = (snap.sandboxKeys && snap.sandboxKeys[sandboxId]) || (sandboxId === 'e2b' ? (snap.e2bKey || '') : '');
+        if ($('settingSandboxKey').value.trim() !== (storedSandbox || '')) return true;
+        return false;
+      }
+
+      function refreshSettingsChrome() {
+        syncSettingsUI();
+        syncThinkingToggles();
+        setIncognitoUI(incognito);
+        updateComposerNote();
+        populateComposerModelSelect();
+        updateComposerEffort();
+        syncAgentButton();
+      }
+
+      // Close, backdrop, and Escape drop the draft. Save is the only commit.
+      function discardSettings() {
+        if (!settingsModal.classList.contains('open')) return;
+        var dirty = settingsDraftDirty();
+        if (settingsSnapshot) {
+          var changed = false;
+          try { changed = JSON.stringify(settings) !== JSON.stringify(settingsSnapshot); }
+          catch (e) { changed = true; }
+          if (changed) {
+            settings = settingsSnapshot;
+            saveSettings();
+          }
+        }
+        settingsSnapshot = null;
+        closeProviderPicker();
+        closeEffortMenu($('settingsEffortWrap'));
+        settingsModal.classList.remove('open');
+        refreshSettingsChrome();
+        if (dirty) showToast('Changes discarded', 'info');
       }
 
       function closeSettings() {
@@ -6925,20 +7122,19 @@
         clampEffort();
 
         saveSettings();
+        settingsSnapshot = null;
         settingsModal.classList.remove('open');
-        setIncognitoUI(incognito);
-
-        updateComposerNote();
-        populateComposerModelSelect();
-        updateComposerEffort();
-        syncAgentButton();
+        closeProviderPicker();
+        closeEffortMenu($('settingsEffortWrap'));
+        refreshSettingsChrome();
         showToast('Settings saved', 'info');
       }
 
       function resetSettings() {
         settings = mergeSettings(null);
         saveSettings();
-        syncSettingsUI();
+        settingsSnapshot = cloneSettings(settings);
+        refreshSettingsChrome();
       }
 
       var LENGTH_HINTS = {
@@ -7462,15 +7658,39 @@
         return out;
       }
 
+      // The search snippets live on the assistant message. The next request has
+      // to carry them, or the model only sees "[1]" and can disown the citation.
+      function citedSourcesAppendix(search) {
+        var sources = search && search.sources;
+        if (!sources || !sources.length) return '';
+        var lines = [];
+        var n = Math.min(sources.length, 10);
+        for (var i = 0; i < n; i++) {
+          var s = sources[i] || {};
+          var line = '[' + (i + 1) + '] ' + (s.title || s.url || 'Source');
+          if (s.url) line += '\n' + s.url;
+          if (s.date) line += '\n' + String(s.date).slice(0, 32);
+          if (s.snippet) line += '\n' + String(s.snippet).slice(0, 240);
+          lines.push(line);
+        }
+        return '\n\nSources for the citations in this answer:\n' + lines.join('\n\n');
+      }
+
+      function assistantWireContent(m) {
+        return (m.content || '') + citedSourcesAppendix(m._search);
+      }
+
       // Serializes one stored message into wire shape. An assistant message that
       // used tools expands into several turns, so this always returns an array.
       function toApiMessages(m) {
         if (m.role === 'assistant' && m._steps && m._steps.length) {
           var out = [];
           m._steps.forEach(function(step) { out = out.concat(stepToApiMessages(step)); });
-          if (m.content) out.push({ role: 'assistant', content: m.content });
+          var wire = assistantWireContent(m);
+          if (wire) out.push({ role: 'assistant', content: wire });
           return out;
         }
+        if (m.role === 'assistant') return [{ role: 'assistant', content: assistantWireContent(m) }];
         return [{ role: m.role, content: m._apiContent || m.content }];
       }
 
@@ -8009,16 +8229,29 @@
               if (event.stop_reason) localMetrics.stop_reason = event.stop_reason;
 
               if (event.search) {
-                assistantMsg._search = event.search;
+                var incomingSearch = event.search;
+                var prevSearch = assistantMsg._search;
+                if (prevSearch && prevSearch.sources && prevSearch.sources.length && !(incomingSearch.sources && incomingSearch.sources.length)) {
+                  incomingSearch = {
+                    query: incomingSearch.query || prevSearch.query || '',
+                    sources: prevSearch.sources,
+                    credits: incomingSearch.credits != null ? incomingSearch.credits : prevSearch.credits,
+                    depth: incomingSearch.depth || prevSearch.depth,
+                    cached: incomingSearch.cached != null ? incomingSearch.cached : prevSearch.cached,
+                    error: incomingSearch.error,
+                    code: incomingSearch.code,
+                  };
+                }
+                assistantMsg._search = incomingSearch;
                 if (isActive() && !assistantMsg.content) {
                   var liveLabel = messagesEl.querySelector('.thinking-label');
                   if (liveLabel) {
-                    if (event.search.sources && event.search.sources.length) {
-                      var searchQuery = event.search.query ? '“' + String(event.search.query).slice(0, 60) + '” · ' : '';
-                      var cachedNote = event.search.cached ? ' · cached' : '';
-                      liveLabel.textContent = searchQuery + event.search.sources.length + ' source' + (event.search.sources.length !== 1 ? 's' : '') + cachedNote;
-                    } else if (event.search.error) {
-                      liveLabel.textContent = event.search.error;
+                    if (incomingSearch.sources && incomingSearch.sources.length) {
+                      var searchQuery = incomingSearch.query ? '“' + String(incomingSearch.query).slice(0, 60) + '” · ' : '';
+                      var cachedNote = incomingSearch.cached ? ' · cached' : '';
+                      liveLabel.textContent = searchQuery + incomingSearch.sources.length + ' source' + (incomingSearch.sources.length !== 1 ? 's' : '') + cachedNote;
+                    } else if (incomingSearch.error) {
+                      liveLabel.textContent = incomingSearch.error;
                     }
                   }
                 }
@@ -8225,20 +8458,38 @@
       var toastTimer = null;
       var toastShowing = false;
 
+      var toastActionRun = null;
+
       function dismissToast() {
         toast.classList.remove('show');
         toastShowing = false;
         clearTimeout(toastTimer);
         toastTimer = null;
+        var actionBtn = $('toastAction');
+        if (actionBtn) actionBtn.hidden = true;
+        toastActionRun = null;
+        if (chatDeleteUndo) finalizeChatDelete();
       }
 
-      function showToast(msg, type) {
+      function showToast(msg, type, action) {
+        if (chatDeleteUndo && !(action && action.keepsUndo)) finalizeChatDelete();
         $('toastText').textContent = msg;
         toast.classList.toggle('info', type === 'info');
+        var actionBtn = $('toastAction');
+        toastActionRun = null;
+        if (actionBtn) {
+          if (action && action.label) {
+            actionBtn.hidden = false;
+            actionBtn.textContent = action.label;
+            toastActionRun = action.run || null;
+          } else {
+            actionBtn.hidden = true;
+          }
+        }
         clearTimeout(toastTimer);
         toast.classList.add('show');
         toastShowing = true;
-        toastTimer = setTimeout(dismissToast, 4000);
+        toastTimer = setTimeout(dismissToast, action && action.label ? 6000 : 4000);
       }
 
       $('sidebarCollapseBtn').addEventListener('click', collapseSidebar);
@@ -8257,12 +8508,12 @@
       $('sidebarSearchClear').addEventListener('click', function() { $('sidebarSearchInput').value = ''; renderChatList(); composerInput.focus(); });
 
       $('settingsNavBtn').addEventListener('click', openSettings);
-      $('closeSettingsBtn').addEventListener('click', closeSettings);
+      $('closeSettingsBtn').addEventListener('click', discardSettings);
       $('saveSettingsBtn').addEventListener('click', closeSettings);
       $('resetSettingsBtn').addEventListener('click', resetSettings);
       $('userChip').addEventListener('click', openSettings);
 
-      settingsModal.addEventListener('click', function(e) { if (e.target === settingsModal) closeSettings(); });
+      settingsModal.addEventListener('click', function(e) { if (e.target === settingsModal) discardSettings(); });
 
       $('effortTrigger').addEventListener('click', function(e) {
         e.stopPropagation();
@@ -8744,7 +8995,12 @@
             }
             if (transcript) {
               var cur = composerInput.value;
-              composerInput.value = cur ? (cur.trim() + ' ' + transcript.trim()) : transcript.trim();
+              var combined = cur ? (cur.trim() + ' ' + transcript.trim()) : transcript.trim();
+              if (combined.length > COMPOSER_MAX_CHARS) {
+                combined = combined.slice(0, COMPOSER_MAX_CHARS);
+                showToast('Message shortened to the ' + COMPOSER_MAX_CHARS.toLocaleString() + ' character limit.', 'info');
+              }
+              composerInput.value = combined;
               autoResize();
               updateSendBtn();
               updateSlashMenu();
@@ -8953,6 +9209,50 @@
         readNext();
       });
 
+      var COMPOSER_MAX_CHARS = 100000;
+
+      function clipComposerInsert(text) {
+        var start = composerInput.selectionStart || 0;
+        var end = composerInput.selectionEnd == null ? start : composerInput.selectionEnd;
+        var room = COMPOSER_MAX_CHARS - (composerInput.value.length - Math.max(0, end - start));
+        if (room < 0) room = 0;
+        if (text.length <= room) return null;
+        if (room === 0) return { reject: true };
+        return { text: text.slice(0, room) };
+      }
+
+      function writeComposerInsert(text) {
+        var start = composerInput.selectionStart || 0;
+        var end = composerInput.selectionEnd == null ? start : composerInput.selectionEnd;
+        composerInput.value = composerInput.value.slice(0, start) + text + composerInput.value.slice(end);
+        var pos = start + text.length;
+        try { composerInput.setSelectionRange(pos, pos); } catch (err) {}
+        autoResize();
+        updateSendBtn();
+        updateSlashMenu();
+      }
+
+      var blockNextComposerInsert = false;
+
+      function guardComposerInsert(text, e) {
+        if (!text) return false;
+        var clip = clipComposerInsert(text);
+        if (!clip) return false;
+        e.preventDefault();
+        if (clip.reject) {
+          showToast('That paste is too long. The composer holds ' + COMPOSER_MAX_CHARS.toLocaleString() + ' characters.', 'info');
+          return true;
+        }
+        writeComposerInsert(clip.text);
+        showToast('Pasted text was shortened to the ' + COMPOSER_MAX_CHARS.toLocaleString() + ' character limit.', 'info');
+        return true;
+      }
+
+      function armComposerInsertBlock() {
+        blockNextComposerInsert = true;
+        setTimeout(function() { blockNextComposerInsert = false; }, 0);
+      }
+
       composerInput.addEventListener('paste', function(e) {
         var items = e.clipboardData && e.clipboardData.items;
         if (!items) return;
@@ -8979,7 +9279,24 @@
           reader.readAsDataURL(blob);
           pastedCount++;
         }
-        if (pastedCount) showToast(pastedCount + ' image' + (pastedCount !== 1 ? 's' : '') + ' pasted', 'info');
+        if (pastedCount || e.defaultPrevented) {
+          armComposerInsertBlock();
+          if (pastedCount) showToast(pastedCount + ' image' + (pastedCount !== 1 ? 's' : '') + ' pasted', 'info');
+          return;
+        }
+        var pastedText = e.clipboardData.getData('text/plain') || '';
+        if (pastedText && guardComposerInsert(pastedText, e)) armComposerInsertBlock();
+      });
+
+      composerInput.addEventListener('beforeinput', function(e) {
+        if (e.inputType !== 'insertFromPaste' && e.inputType !== 'insertFromDrop') return;
+        if (blockNextComposerInsert) {
+          blockNextComposerInsert = false;
+          e.preventDefault();
+          return;
+        }
+        if (!e.data) return;
+        guardComposerInsert(e.data, e);
       });
 
       sendBtn.addEventListener('click', function() {
@@ -8990,7 +9307,17 @@
       $('editCancelBtn').addEventListener('click', cancelMessageEdit);
       $('editSaveBtn').addEventListener('click', applyMessageEdit);
 
-      composerInput.addEventListener('input', function() { autoResize(); updateSendBtn(); updateSlashMenu(); });
+      composerInput.addEventListener('input', function() {
+        if (composerInput.value.length > COMPOSER_MAX_CHARS) {
+          var caret = composerInput.selectionStart || COMPOSER_MAX_CHARS;
+          composerInput.value = composerInput.value.slice(0, COMPOSER_MAX_CHARS);
+          try { composerInput.setSelectionRange(Math.min(caret, COMPOSER_MAX_CHARS), Math.min(caret, COMPOSER_MAX_CHARS)); } catch (err) {}
+          showToast('Message shortened to the ' + COMPOSER_MAX_CHARS.toLocaleString() + ' character limit.', 'info');
+        }
+        autoResize();
+        updateSendBtn();
+        updateSlashMenu();
+      });
 
       composerInput.addEventListener('keydown', function(e) {
         var menu = $('slashMenu');
@@ -9073,6 +9400,13 @@
         if (e.target === $('codePreviewModal')) closeCodePreview();
       });
 
+      $('toastAction').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var run = toastActionRun;
+        toastActionRun = null;
+        if (run) run();
+        else dismissToast();
+      });
       $('toastClose').addEventListener('click', dismissToast);
       toast.addEventListener('click', function(e) { if (e.target === toast) dismissToast(); });
 
@@ -9080,7 +9414,7 @@
         if (e.key === 'Escape') {
           if ($('codePreviewModal').classList.contains('open')) { closeCodePreview(); return; }
           if (toastShowing) { dismissToast(); return; }
-          if (settingsModal.classList.contains('open')) { closeSettings(); return; }
+          if (settingsModal.classList.contains('open')) { discardSettings(); return; }
         }
         if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); toggleIncognito(); }
         if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); startNewChat(); }
@@ -9140,6 +9474,7 @@
           }
           chat._branchActive = newActive;
         }
+        normalizeThreadBranches(chat);
       }
 
       function init() {

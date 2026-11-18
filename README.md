@@ -296,7 +296,7 @@ Model-written code is also never shell-quoted. It's base64'd in the Worker and d
 
 ### API key security model
 
-API keys are stored in `localStorage` per provider (the Tavily key alongside them), never in the Worker source. The Worker is just a passthrough — it receives the key, model, and messages in each POST body, forwards to the provider, and streams back. The Worker script itself contains zero secrets. This means anyone can audit the Worker code and confirm it doesn't log, store, or exfiltrate keys. The tradeoff is that keys travel through the Worker, which you must trust — but since you deploy it yourself, that trust boundary is you.
+API keys are stored in `localStorage` per provider (the Tavily key alongside them), never in the Worker source. The Worker is just a passthrough — it receives the key, model, and messages in each POST body, forwards to the provider, and streams back. The Worker script itself contains zero secrets. This means anyone can audit the Worker code and confirm it doesn't log, store, or exfiltrate keys. The tradeoff is that keys travel through the Worker, which you must trust — but since you deploy it yourself, that trust boundary is you. The Worker still refuses anonymous callers: set `ALLOWED_ORIGINS` or `OMNI_PROXY_KEY` (see setup) or it will not proxy anything.
 
 ## Setup
 
@@ -304,7 +304,10 @@ API keys are stored in `localStorage` per provider (the Tavily key alongside the
 
 1. Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/) → Workers & Pages → Create
 2. Create a Worker, paste the contents of `worker.js`
-3. No Worker secrets are required. Each user pastes their own [Tavily API key](https://tavily.com/) into Settings; the Worker forwards it to Tavily per request and stores nothing.
+3. Lock the Worker before you rely on it. In the Worker's settings, add one of these variables (a variable, not a secret baked into the script):
+   - `ALLOWED_ORIGINS` — the exact origin of the static site, for example `https://omni.example.com`. Separate more than one with commas. This is enough on its own.
+   - `OMNI_PROXY_KEY` — a long random string. Paste the same value into Settings → Worker access key. Use this when the page is served from more than one origin, or when you also call the Worker from somewhere that is not a browser. Page-close sandbox cleanup sends the key in the request body, because `sendBeacon` cannot set headers.
+   Set at least one. With neither set, the Worker refuses every request, so it is not an open proxy. Provider keys and the Tavily key are still not stored in the Worker: each user pastes their own [Tavily API key](https://tavily.com/) into Settings, and the Worker forwards it per request.
 4. Deploy. Your Worker URL will be something like `https://omni-proxy.your-subdomain.workers.dev`
 
 ### 2. Serve the static files
@@ -328,8 +331,9 @@ Both bill per second of sandbox *existence*, not execution, so keep the step lim
 1. Open the deployed URL
 2. Click the settings icon in the sidebar
 3. Set the **API Endpoint** to your Worker URL (from step 1)
-4. Select a provider, enter your API key, pick a model
-5. Start chatting
+4. If you set `OMNI_PROXY_KEY` on the Worker, paste it into **Worker access key**. Skip that field when the Worker is locked with `ALLOWED_ORIGINS` only.
+5. Select a provider, enter your API key, pick a model
+6. Start chatting
 
 Everything is stored in your browser — no accounts, no database, no backend state.
 

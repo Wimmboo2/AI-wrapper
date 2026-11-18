@@ -5815,13 +5815,6 @@
         return el;
       }
 
-      function truncateSourceTitle(title, maxLen) {
-        var t = String(title || '').trim();
-        if (!t) return 'Source';
-        if (t.length <= maxLen) return t;
-        return t.slice(0, maxLen - 1) + '\u2026';
-      }
-
       function makeCitationChip(index, sources, msgIndex) {
         var src = sources[index - 1] || {};
         var title = src.title || src.url || 'Source';
@@ -5836,7 +5829,9 @@
         chip.appendChild(num);
         var name = document.createElement('span');
         name.className = 'citation-chip-name';
-        name.textContent = truncateSourceTitle(title, 26);
+        name.textContent = title;
+        name.title = title;
+        chip.title = title;
         chip.appendChild(name);
         chip.insertAdjacentHTML('beforeend', ICONS.externalLink);
         chip.addEventListener('click', function(e) {
@@ -5878,6 +5873,9 @@
             if (match.index > last) frag.appendChild(document.createTextNode(text.slice(last, match.index)));
             frag.appendChild(makeCitationChip(n, sources, msgIndex));
             last = match.index + match[0].length;
+            // The chip already has its own margin. The space the model left
+            // after [n] would sit on top of that and read as a stray gap.
+            if (text.charAt(last) === ' ' || text.charAt(last) === '\u00A0') last += 1;
             changed = true;
           }
           if (!changed) continue;
@@ -5891,7 +5889,13 @@
           if (!m) continue;
           var idx = parseInt(m[1], 10);
           if (!(idx >= 1 && idx <= sources.length)) continue;
-          a.replaceWith(makeCitationChip(idx, sources, msgIndex));
+          var chip = makeCitationChip(idx, sources, msgIndex);
+          a.replaceWith(chip);
+          var afterChip = chip.nextSibling;
+          if (afterChip && afterChip.nodeType === 3 && (afterChip.nodeValue.charAt(0) === ' ' || afterChip.nodeValue.charAt(0) === '\u00A0')) {
+            afterChip.nodeValue = afterChip.nodeValue.slice(1);
+            if (!afterChip.nodeValue) afterChip.parentNode.removeChild(afterChip);
+          }
         }
       }
 

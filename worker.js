@@ -1425,16 +1425,17 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
 // which is the same reframing job this Worker already does for LLM protocols.
 // ---------------------------------------------------------------------------
 
-// Novita's Agent Sandbox is wire-compatible with E2B: same POST /sandboxes with
-// {templateID, timeout}, same sandboxID/domain/envdAccessToken response keys,
-// same DELETE and /timeout routes, same envd on 49983 behind a
-// {port}-{sandboxId}.{domain} host, and the same "process.Process" Connect
-// service. So the two differ only by base URL and domain, not by code path.
-// Verified against api.e2b.app's OpenAPI spec and novita-sandbox 2.1.1.
+// Novita's Agent Sandbox still speaks the v1 wire: POST /sandboxes with
+// {templateID, timeout}, sandboxID/domain/envdAccessToken, DELETE and /timeout,
+// envd on 49983 behind a {port}-{sandboxId}.{domain} host, and the same
+// "process.Process" Connect service. E2B create moved to POST /v2/sandboxes;
+// kill and timeout stay on the v1 routes. Verified against api.e2b.app's
+// OpenAPI spec (post /v2/sandboxes) and novita-sandbox 2.1.1.
 const SANDBOX_PROVIDERS = {
   e2b: {
     label: 'E2B',
     api: 'https://api.e2b.app',
+    createPath: '/v2/sandboxes',
     defaultDomain: 'e2b.app',
     // Covers the bare domain, regional subdomains and their test domain.
     domainRe: /^([a-z0-9-]+\.)*e2b(-[a-z0-9]+)?\.(app|dev)$/,
@@ -1442,6 +1443,7 @@ const SANDBOX_PROVIDERS = {
   novita: {
     label: 'Novita',
     api: 'https://api.us-phx-1.sandbox.novita.ai',
+    createPath: '/sandboxes',
     defaultDomain: 'us-phx-1.sandbox.novita.ai',
     domainRe: /^([a-z0-9-]+\.)*sandbox\.novita\.ai$/,
   },
@@ -1541,7 +1543,7 @@ function utf8(bytes) {
 }
 
 async function sandboxCreate(prov, key, timeoutSec, template) {
-  const res = await fetch(prov.api + '/sandboxes', {
+  const res = await fetch(prov.api + (prov.createPath || '/sandboxes'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
     body: JSON.stringify({

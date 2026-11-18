@@ -2031,8 +2031,11 @@ export default {
         STEMS.test(lower) || COMPARE.test(lower) || RECOMMEND.test(lower) || LOOKUP.test(lower);
     }
 
-    const temp = typeof temperature === 'number' ? temperature : 0.7;
-    const maxOut = typeof max_tokens === 'number' ? max_tokens : 2048;
+    const temp = clampTemperature(temperature);
+    const maxOut = clampMaxTokens(max_tokens);
+    // Missing or true keeps the live NDJSON stream. Only an explicit false
+    // waits for the whole provider response and returns one JSON object.
+    const wantStream = body.stream !== false;
     // Whitelist, not a spread: this is what keeps client-injected vendor fields
     // out of provider requests. Tool fields have to be listed or agent turns are
     // silently flattened into unusable {role, content} pairs.
@@ -2078,8 +2081,19 @@ export default {
       ? safeMessages.map((m) => Object.assign({}, m, { content: stripImageParts(m.content) }))
       : safeMessages;
 
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
+    const collected = [];
+    let readable = null;
+    let writer;
+    if (wantStream) {
+      const pair = new TransformStream();
+      readable = pair.readable;
+      writer = pair.writable.getWriter();
+    } else {
+      writer = {
+        write: async (chunk) => { collected.push(chunk); },
+        close: async () => {},
+      };
+    }
     const encoder = new TextEncoder();
 
     const streamPromise = (async () => {
@@ -2090,43 +2104,43 @@ export default {
         switch (provider) {
           case 'openai': {
             const url = PROVIDER_URLS.openai;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'deepinfra': {
             const url = PROVIDER_URLS.deepinfra;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'nvidia': {
             const url = PROVIDER_URLS.nvidia;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'moonshot': {
             const url = PROVIDER_URLS.moonshot;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'gmicloud': {
             const url = PROVIDER_URLS.gmicloud;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'together': {
             const url = PROVIDER_URLS.together;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'deepseek': {
             const url = PROVIDER_URLS.deepseek;
-            const reqBody = buildOpenAIRequest(model, deepseekMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, deepseekMessages, temp, maxOut, effortTier, agentTools, wantStream);
             if (effortTier) reqBody.thinking = { type: 'enabled' };
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
@@ -2138,15 +2152,15 @@ export default {
             // the built-in `web_search` tool is not available here either. xAI
             // searches through Tavily like the other OpenAI-compatible
             // providers.
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'openrouter': {
             const url = PROVIDER_URLS.openrouter;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, null, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, null, agentTools, wantStream);
             if (effortTier) reqBody.reasoning = { effort: effortTier };
-            const nativeSearch = !forceTavily && searchMode !== 'off';
+            const nativeSearch = !forceTavily && searchRequested;
             if (nativeSearch) {
               reqBody.tools = (reqBody.tools || []).concat([{ type: 'openrouter:web_search', parameters: { max_results: 5, max_uses: 5 } }]);
             }
@@ -2155,20 +2169,20 @@ export default {
           }
           case 'anthropic': {
             const effortBudget = ANTHROPIC_EFFORT_BUDGET[effortTier] || null;
-            const searchTool = !forceTavily && searchMode !== 'off' ? anthropicSearchTool(model) : null;
-            const reqBody = buildAnthropicRequest(model, safeMessages, temp, maxOut, effortBudget, searchTool, agentTools);
+            const searchTool = !forceTavily && searchRequested ? anthropicSearchTool(model) : null;
+            const reqBody = buildAnthropicRequest(model, safeMessages, temp, maxOut, effortBudget, searchTool, agentTools, wantStream);
             await streamAnthropic(apiKey, reqBody, encoder, writer);
             break;
           }
           case 'google': {
             const effortBudget = GOOGLE_EFFORT_BUDGET[effortTier] || null;
             const reqBody = buildGoogleRequest(model, safeMessages, temp, maxOut, effortBudget, agentTools);
-            const useNativeSearch = !forceTavily && searchMode !== 'off' && model.indexOf('gemini') === 0;
+            const useNativeSearch = !forceTavily && searchRequested && model.indexOf('gemini') === 0;
             if (useNativeSearch) {
               if (!reqBody.tools) reqBody.tools = [{ googleSearch: {} }];
               else reqBody.tools.push({ googleSearch: {} });
             }
-            await streamGoogle(model, apiKey, reqBody, encoder, writer, useNativeSearch);
+            await streamGoogle(model, apiKey, reqBody, encoder, writer, useNativeSearch, wantStream);
             break;
           }
           case 'custom': {
@@ -2180,7 +2194,7 @@ export default {
               await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Custom base URL must be https and must not point at a private, link-local, or reserved address' } }) + '\n'));
               break;
             }
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(baseURL, apiKey, reqBody, encoder, writer, false, 'manual');
             break;
           }
@@ -2193,7 +2207,13 @@ export default {
       await writer.close();
     })();
 
-    ctx.waitUntil(streamPromise);
-    return streamToNDJSON(readable, auth.corsOrigin);
+    if (wantStream) {
+      ctx.waitUntil(streamPromise);
+      return streamToNDJSON(readable, auth.corsOrigin);
+    }
+    await streamPromise;
+    const collapsed = collapseNdjson(collected);
+    const failed = collapsed.error && !collapsed.content && !(collapsed.tool_calls && collapsed.tool_calls.length);
+    return jsonResponse(collapsed, failed ? 502 : 200, auth.corsOrigin);
   },
 };

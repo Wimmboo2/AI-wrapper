@@ -794,7 +794,7 @@
       border-radius: 6px;
       border: none;
       background: transparent;
-      color: var(--text-faint);
+      color: var(--text-secondary);
       font-size: 11px;
       font-family: var(--font);
       cursor: pointer;
@@ -803,7 +803,7 @@
 
     .code-block-btn:hover {
       background: rgba(255, 255, 255, 0.08);
-      color: var(--text-secondary);
+      color: var(--text);
     }
 
     .code-block-btn.copied {
@@ -830,11 +830,12 @@
       display: block;
     }
 
-    /* Code preview modal */
-    .code-preview-modal {
-      max-width: 840px;
-      width: 94vw;
-      height: 85vh;
+    /* Beats .modal's 440px cap. A live page needs a reading width, not a settings card. */
+    .modal.code-preview-modal {
+      width: min(1120px, calc(100vw - 48px));
+      max-width: 1120px;
+      height: min(860px, calc(100vh - 64px));
+      max-height: calc(100vh - 64px);
     }
 
     /* Code mode pill button */
@@ -1062,7 +1063,7 @@
       border-radius: 8px;
       border: none;
       background: transparent;
-      color: var(--text-faint);
+      color: var(--text-secondary);
       cursor: pointer;
       display: inline-flex;
       align-items: center;
@@ -1072,7 +1073,7 @@
 
     .msg-action:hover {
       background: rgba(255,255,255,0.06);
-      color: var(--text-secondary);
+      color: var(--text);
     }
 
     /* Regenerate dropdown */
@@ -1095,6 +1096,10 @@
       display: none;
     }
     .regenerate-menu.open { display: block; }
+    .regenerate-menu.drop-down {
+      bottom: auto;
+      top: calc(100% + 6px);
+    }
     .regenerate-item {
       display: flex;
       align-items: center;
@@ -4008,6 +4013,7 @@
 
       var DEFAULT_TEMPLATES = [
         { key: 'code', label: 'Code mode', color: 'purple', prompt: '', enableCodeMode: true },
+        { key: 'search', label: 'Search the web', color: 'blue', prompt: '', hint: 'Runs the rest of the line', enableWebSearch: true },
         { key: 'web', label: 'Web search', color: 'blue', prompt: '', enableWebSearch: true },
         { key: 'explain', label: 'Simple Explainer', color: 'amber', prompt: '', prefix: 'Explain this topic simply and clearly, step by step: ' },
         { key: 'summarize', label: 'Summarize Text', color: 'emerald', prompt: '', prefix: 'Summarize the key takeaways and main points of the following text: ' },
@@ -4142,6 +4148,19 @@
           // older build. A URL the user actually typed is left alone.
           if (k === 'apiEndpoint' && !String(merged[k] || '').trim()) {
             merged[k] = DEFAULT_SETTINGS.apiEndpoint;
+          }
+          if (k === 'promptTemplates' && Array.isArray(merged[k]) && !merged[k].some(function(t) { return t && t.key === 'search'; })) {
+            var searchTpl = null;
+            for (var si = 0; si < DEFAULT_TEMPLATES.length; si++) {
+              if (DEFAULT_TEMPLATES[si].key === 'search') searchTpl = DEFAULT_TEMPLATES[si];
+            }
+            if (searchTpl) {
+              var at = 0;
+              for (var ti = 0; ti < merged[k].length; ti++) {
+                if (merged[k][ti] && merged[k][ti].key === 'web') { at = ti; break; }
+              }
+              merged[k].splice(at, 0, searchTpl);
+            }
           }
         }
         // Cerebras and Groq were replaced by DeepInfra and GMI Cloud. A saved
@@ -5405,6 +5424,7 @@
             } else {
               closeRegenerateMenus();
               regenMenu.classList.add('open');
+              placeRegenerateMenu(regenMenu);
               retryBtn.setAttribute('aria-expanded', 'true');
             }
           });
@@ -5416,15 +5436,73 @@
         return actions;
       }
 
+      function resetRegenerateMenu(menu) {
+        menu.classList.remove('open');
+        menu.classList.remove('drop-down');
+        menu.style.position = '';
+        menu.style.top = '';
+        menu.style.left = '';
+        menu.style.right = '';
+        menu.style.bottom = '';
+        menu.style.zIndex = '';
+      }
+
       function closeRegenerateMenus() {
         document.querySelectorAll('.regenerate-menu.open').forEach(function(m) {
-          m.classList.remove('open');
+          resetRegenerateMenu(m);
           var act = m.closest('.message-actions');
           if (act) {
             var b = act.querySelector('.msg-action[title="Regenerate"]');
             if (b) b.setAttribute('aria-expanded', 'false');
           }
         });
+      }
+
+      // The menu prefers to open upward. A short reply leaves no gap under the
+      // user message, so it drops below the button instead. If the list would
+      // clip that, it is pinned to the viewport so the items stay readable.
+      function placeRegenerateMenu(menu) {
+        resetRegenerateMenu(menu);
+        menu.classList.add('open');
+        var anchor = menu.parentElement;
+        if (!anchor) return;
+        var anchorRect = anchor.getBoundingClientRect();
+        var menuRect = menu.getBoundingClientRect();
+        var message = menu.closest('.message');
+        var prev = message ? message.previousElementSibling : null;
+        var ceiling = 8;
+        if (prev && prev.classList.contains('message')) {
+          ceiling = Math.max(ceiling, prev.getBoundingClientRect().bottom + 8);
+        }
+        var need = menuRect.height + 6;
+        if (anchorRect.top - ceiling >= need && anchorRect.top - need >= 8) return;
+
+        menu.classList.add('drop-down');
+        var placed = menu.getBoundingClientRect();
+        var wrap = document.getElementById('messagesWrap');
+        var limit = window.innerHeight - 8;
+        if (wrap) limit = Math.min(limit, wrap.getBoundingClientRect().bottom);
+        if (placed.bottom <= limit && placed.top >= 8) return;
+
+        var top = anchorRect.bottom + 6;
+        if (top + menuRect.height > window.innerHeight - 8) {
+          top = Math.max(8, window.innerHeight - 8 - menuRect.height);
+        }
+        var left = Math.max(8, Math.min(anchorRect.left, window.innerWidth - menuRect.width - 8));
+        if (prev && prev.classList.contains('message')) {
+          var prevBox = prev.getBoundingClientRect();
+          var covers = top < prevBox.bottom - 4 && (top + menuRect.height) > prevBox.top + 4 &&
+            left < prevBox.right - 4 && (left + menuRect.width) > prevBox.left + 4;
+          if (covers && prevBox.bottom + 8 + menuRect.height <= window.innerHeight - 8) {
+            top = prevBox.bottom + 8;
+          }
+        }
+        menu.style.position = 'fixed';
+        menu.style.top = Math.round(top) + 'px';
+        menu.style.left = Math.round(left) + 'px';
+        menu.style.bottom = 'auto';
+        menu.style.right = 'auto';
+        menu.style.zIndex = '140';
       }
 
       // Everything that makes one reply distinct from its siblings. The token
@@ -7275,6 +7353,17 @@
         opts = opts || {};
         var text = composerInput.value.trim();
         if (activeChatId in streamControllers) return;
+        var slashSearch = searchCommandQuery(text);
+        if (slashSearch != null) {
+          if (!slashSearch && !pendingFiles.length && !opts.skipUserPush) {
+            showToast('Type a query after /search');
+            return;
+          }
+          if (slashSearch) {
+            text = slashSearch;
+            opts.searchMode = 'on';
+          }
+        }
         if (!opts.skipUserPush && !text && !pendingFiles.length) return;
 
         if (!settings.apiEndpoint) { showToast('Set your API endpoint in Settings first'); return; }
@@ -8749,7 +8838,7 @@
               '<span class="slash-item-key">/' + escapeHtml(item.key) + '</span>' +
               '<span class="slash-item-label">' + escapeHtml(item.label) + '</span>' +
               '</div>' +
-              '<span class="slash-item-prompt">' + (item.prompt ? escapeHtml(item.prompt) : 'Activate mode') + '</span>';
+              '<span class="slash-item-prompt">' + escapeHtml(item.hint || (item.prompt ? item.prompt : 'Activate mode')) + '</span>';
             el.addEventListener('click', function(e) {
               e.stopPropagation();
               applySlashTemplate(item);
@@ -8807,7 +8896,28 @@
         }
       }
 
+      function searchCommandQuery(text) {
+        var m = String(text || '').match(/^\/search\b\s*([\s\S]*)$/i);
+        if (!m) return null;
+        return m[1].replace(/\s+/g, ' ').trim();
+      }
+
       function applySlashTemplate(item) {
+        if (item.key === 'search') {
+          var q = searchCommandQuery(composerInput.value);
+          var searchMenu = $('slashMenu');
+          if (searchMenu) searchMenu.classList.remove('visible');
+          if (q) {
+            composerInput.value = q;
+            webSearch = true;
+            activeTemplate = null;
+            renderComposerActiveTags();
+            autoResize();
+            updateSendBtn();
+            sendMessage({ searchMode: 'on' });
+            return;
+          }
+        }
         composerInput.value = item.prompt || '';
         if (item.enableCodeMode) {
           codeMode = true;

@@ -1139,15 +1139,30 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
         }
 
         if (parsed.usageMetadata) {
-          await writer.write(encoder.encode(JSON.stringify({
-            usage: {
-              prompt_tokens: parsed.usageMetadata.promptTokenCount,
-              completion_tokens: parsed.usageMetadata.candidatesTokenCount,
-              total_tokens: parsed.usageMetadata.totalTokenCount,
-              cached_tokens: parsed.usageMetadata.cachedContentTokenCount,
-              reasoning_tokens: parsed.usageMetadata.thoughtsTokenCount,
+          const um = parsed.usageMetadata;
+          const prompt = typeof um.promptTokenCount === 'number' ? um.promptTokenCount : null;
+          const candidates = typeof um.candidatesTokenCount === 'number' ? um.candidatesTokenCount : null;
+          const thoughts = typeof um.thoughtsTokenCount === 'number' ? um.thoughtsTokenCount : null;
+          const total = typeof um.totalTokenCount === 'number' ? um.totalTokenCount : null;
+          // candidatesTokenCount omits thoughts on some models and includes
+          // them on others. total - prompt is the billed output when it lines
+          // up with one of those two shapes, and is otherwise left alone so a
+          // thought count is not added twice.
+          let completion = candidates;
+          if (prompt != null && total != null) {
+            const implied = total - prompt;
+            const withThoughts = (candidates || 0) + (thoughts || 0);
+            if (implied >= 0 && (candidates == null || implied === candidates || (thoughts != null && implied === withThoughts))) {
+              completion = implied;
             }
-          }) + '\n'));
+          }
+          const usage = {};
+          if (prompt != null) usage.prompt_tokens = prompt;
+          if (completion != null) usage.completion_tokens = completion;
+          if (total != null) usage.total_tokens = total;
+          if (typeof um.cachedContentTokenCount === 'number') usage.cached_tokens = um.cachedContentTokenCount;
+          if (thoughts != null) usage.reasoning_tokens = thoughts;
+          await writer.write(encoder.encode(JSON.stringify({ usage }) + '\n'));
         }
 
         const candidates = parsed.candidates;

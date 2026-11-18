@@ -3491,6 +3491,12 @@
         </div>
 
         <div class="setting-group">
+          <label class="setting-label" for="settingProxyKey">Worker access key</label>
+          <p class="setting-desc">Only if the Worker has OMNI_PROXY_KEY set. Leave empty when the Worker is locked with ALLOWED_ORIGINS instead. Sent to your Worker, not to the model provider.</p>
+          <input type="password" class="setting-input setting-input-mono" id="settingProxyKey" placeholder="Same value as OMNI_PROXY_KEY" autocomplete="off" />
+        </div>
+
+        <div class="setting-group">
           <label class="setting-label" for="settingProvider">Provider</label>
           <p class="setting-desc">Select your AI provider to populate available models.</p>
           <select class="setting-select" id="settingProvider" hidden>
@@ -3999,6 +4005,7 @@
         searchBackend: 'auto',
         searchDepth: 'auto',
         tavilyKey: '',
+        proxyKey: '',
         customBaseURL: '',
         customModels: [],
         customModelId: '',
@@ -4946,6 +4953,26 @@
         return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       }
 
+      // Links are written into an href attribute. Only http, https, and mailto
+      // survive. javascript:, data:, and any URL that can break out of the
+      // attribute are dropped back to plain text.
+      function sanitizeLinkHref(escapedHref) {
+        var raw = String(escapedHref)
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"');
+        // Browsers strip ASCII controls before parsing a URL, so a tab or
+        // newline inside "javascript:" still executes. Remove them first.
+        raw = raw.replace(/[\u0000-\u001F\u007F]/g, '').replace(/^[\u0020\u00A0]+|[\u0020\u00A0]+$/g, '');
+        if (!raw) return '';
+        var url;
+        try { url = new URL(raw); } catch (e) { return ''; }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'mailto:') return '';
+        if (/[\u0000-\u001F\u007F"'<>`]/.test(url.href)) return '';
+        return escapeHtml(url.href);
+      }
+
       function renderMarkdown(text) {
         if (!text) return '';
         var html = escapeHtml(text);
@@ -4977,7 +5004,11 @@
         html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
         html = html.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, function(m) { return '<ul>' + m + '</ul>'; });
         html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
-        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, href) {
+          var safe = sanitizeLinkHref(href);
+          if (!safe) return '[' + label + '](' + href + ')';
+          return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+        });
         return html.split(/\n\n+/).map(function(block) {
           block = block.trim();
           if (!block) return '';
@@ -6469,6 +6500,7 @@
 
       function syncSettingsUI() {
         $('settingEndpoint').value = settings.apiEndpoint || '';
+        $('settingProxyKey').value = settings.proxyKey || '';
         $('settingProvider').value = settings.provider || 'openai';
         $('settingApiKey').value = settings.apiKeys[settings.provider] || settings.apiKey || '';
         $('settingTemp').value = settings.temperature;
@@ -6531,6 +6563,7 @@
 
       function closeSettings() {
         settings.apiEndpoint = $('settingEndpoint').value.trim();
+        settings.proxyKey = $('settingProxyKey').value.trim();
         settings.provider = $('settingProvider').value;
         var newKey = $('settingApiKey').value.trim();
         if (newKey) { settings.apiKeys[settings.provider] = newKey; }
@@ -6673,7 +6706,19 @@
       // instead of failing with a confusing "Missing E2B API key".
       function withLegacyKey(body) {
         if ((body.sandboxProvider || 'e2b') === 'e2b' && body.sandboxKey) body.e2bKey = body.sandboxKey;
+        if (settings.proxyKey) body.proxyKey = settings.proxyKey;
         return body;
+      }
+
+      function workerHeaders(extra) {
+        var headers = { 'Content-Type': 'application/json' };
+        if (extra) {
+          for (var k in extra) {
+            if (Object.prototype.hasOwnProperty.call(extra, k)) headers[k] = extra[k];
+          }
+        }
+        if (settings.proxyKey) headers['X-Omni-Proxy-Key'] = settings.proxyKey;
+        return headers;
       }
 
       function thinkModelKey() {
@@ -6694,7 +6739,7 @@
         if (sandboxes[chatId]) return sandboxes[chatId];
         var res = await fetch(agentEndpoint('/sandbox/create'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: workerHeaders(),
           body: JSON.stringify(withLegacyKey({ sandboxProvider: activeSandboxProvider(), sandboxKey: sandboxKey(), timeoutSec: settings.agentSandboxTimeout })),
           signal: signal,
         });
@@ -6714,7 +6759,7 @@
           if (!sb) { stopKeepalive(chatId); return; }
           fetch(agentEndpoint('/sandbox/keepalive'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: workerHeaders(),
             body: JSON.stringify(withLegacyKey({ sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(), sandboxId: sb.sandboxId, timeoutSec: settings.agentSandboxTimeout })),
           }).catch(function() {});
         }, Math.max(30000, (settings.agentSandboxTimeout * 1000) / 3));
@@ -6737,14 +6782,14 @@
           } catch (e) { /* fall through to fetch */ }
         }
         fetch(agentEndpoint('/sandbox/kill'), {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true,
+          method: 'POST', headers: workerHeaders(), body: payload, keepalive: true,
         }).catch(function() {});
       }
 
       function sandboxExec(sb, code, language, signal) {
         return fetch(agentEndpoint('/sandbox/exec'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: workerHeaders(),
           body: JSON.stringify(withLegacyKey({
             sandboxProvider: sb.provider || activeSandboxProvider(), sandboxKey: sandboxKey(),
             sandboxId: sb.sandboxId, domain: sb.domain, token: sb.token,
@@ -7293,6 +7338,7 @@
         if (settings.provider === 'custom') {
           requestBody.baseURL = settings.customBaseURL || '';
         }
+        if (settings.proxyKey) requestBody.proxyKey = settings.proxyKey;
 
         var runStart = performance.now();
         // One record per request/response turn. An agent reply is many turns, and
@@ -7513,10 +7559,9 @@
 
           var res = await fetch(endpoint + '/api/chat', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
+            headers: workerHeaders({
               Accept: 'application/x-ndjson, application/json, text/event-stream',
-            },
+            }),
             body: JSON.stringify(reqBody),
             signal: streamControllers[chat.id] ? streamControllers[chat.id].signal : undefined,
           });
@@ -8196,7 +8241,10 @@
         if (!currentPreviewCode) return;
         var blob = new Blob([currentPreviewCode], { type: 'text/html;charset=utf-8' });
         var url = URL.createObjectURL(blob);
-        window.open(url, '_blank');
+        // Model HTML in the new tab must not keep window.opener, or it can
+        // navigate this app (tabnabbing) and read the page that holds API keys.
+        var preview = window.open(url, '_blank', 'noopener,noreferrer');
+        if (preview) preview.opener = null;
       }
 
       var codeMode = false;

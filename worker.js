@@ -47,45 +47,245 @@ function searchCacheSet(key, value) {
   searchCache.set(key, { at: Date.now(), value });
 }
 
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': '*',
+// Never '*'. Echo one concrete origin, or omit the header.
+function corsHeaders(corsOrigin) {
+  const headers = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, X-Omni-Proxy-Key',
+    'Access-Control-Max-Age': '86400',
+    Vary: 'Origin',
   };
+  if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
+  return headers;
 }
 
-function jsonResponse(data, status) {
+function jsonResponse(data, status, corsOrigin) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(corsOrigin) },
   });
 }
 
-function streamToNDJSON(readable) {
+function streamToNDJSON(readable, corsOrigin) {
   return new Response(readable, {
-    headers: { 'Content-Type': 'application/x-ndjson', ...corsHeaders() },
+    headers: { 'Content-Type': 'application/x-ndjson', ...corsHeaders(corsOrigin) },
   });
 }
 
-// The custom-provider base URL is caller-supplied and gets fetched server-side,
-// so without this the Worker is an open relay into private network space.
+function normalizeOrigin(value) {
+  if (!value || value === 'null') return '';
+  let u;
+  try { u = new URL(value); } catch (_) { return ''; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+  return u.origin;
+}
+
+function allowedOrigins(env) {
+  const raw = env && env.ALLOWED_ORIGINS;
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+  const out = [];
+  for (const part of raw.split(/[\s,]+/)) {
+    const origin = normalizeOrigin(part);
+    if (origin && out.indexOf(origin) === -1) out.push(origin);
+  }
+  return out;
+}
+
+function configuredProxyKey(env) {
+  const raw = env && env.OMNI_PROXY_KEY;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function presentedProxyKey(request, body) {
+  const header = request.headers.get('X-Omni-Proxy-Key');
+  if (typeof header === 'string' && header) return header;
+  if (body && typeof body.proxyKey === 'string') return body.proxyKey;
+  return '';
+}
+
+// Length-sensitive compare without an early return on the first mismatch.
+function timingSafeEqual(a, b) {
+  const left = String(a);
+  const right = String(b);
+  let diff = left.length ^ right.length;
+  const n = Math.max(left.length, right.length);
+  for (let i = 0; i < n; i++) {
+    const ac = i < left.length ? left.charCodeAt(i) : 0;
+    const bc = i < right.length ? right.charCodeAt(i) : 0;
+    diff |= ac ^ bc;
+  }
+  return diff === 0;
+}
+
+// The Worker is a public URL that fetches other hosts. Without an origin
+// allowlist or a proxy key, anyone on the internet can use that fetch.
+// Either lock is enough. Built-in providers, sandbox routes, and safe custom
+// HTTPS endpoints all keep working for a caller that passes the lock.
+function authorize(request, env, body) {
+  const origin = normalizeOrigin(request.headers.get('Origin'));
+  const allowed = allowedOrigins(env);
+  const expected = configuredProxyKey(env);
+  const presented = presentedProxyKey(request, body);
+
+  if (allowed.length && allowed.indexOf(origin) === -1) {
+    return { ok: false, status: 403, corsOrigin: '', message: 'Origin is not allowed' };
+  }
+  if (!expected && !allowed.length) {
+    return {
+      ok: false,
+      status: 403,
+      corsOrigin: origin,
+      message: 'This proxy is locked. Set ALLOWED_ORIGINS to your site origin (for example https://chat.example), or set OMNI_PROXY_KEY and send it as the X-Omni-Proxy-Key header.',
+    };
+  }
+  if (expected && !timingSafeEqual(presented, expected)) {
+    return { ok: false, status: 401, corsOrigin: origin, message: 'Missing or invalid proxy key' };
+  }
+  return { ok: true, status: 200, corsOrigin: origin, message: '' };
+}
+
+function ipv4ToInt(a, b, c, d) {
+  return ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+}
+
+function inCidr(ip, base, bits) {
+  const mask = bits === 0 ? 0 : ((0xffffffff << (32 - bits)) >>> 0);
+  return (ip & mask) === (base & mask);
+}
+
+// Private, loopback, link-local, CGNAT, documentation, benchmarking, and the
+// multicast/reserved block. Checked against the address the URL parser
+// canonicalized, so decimal, hex, and octal spellings of the same host match.
+function isBlockedIPv4(a, b, c, d) {
+  if (a > 255 || b > 255 || c > 255 || d > 255) return true;
+  if (a >= 224) return true;
+  const ip = ipv4ToInt(a, b, c, d);
+  const cidrs = [
+    [0, 0, 0, 0, 8],
+    [10, 0, 0, 0, 8],
+    [100, 64, 0, 0, 10],
+    [127, 0, 0, 0, 8],
+    [169, 254, 0, 0, 16],
+    [172, 16, 0, 0, 12],
+    [192, 0, 0, 0, 24],
+    [192, 0, 2, 0, 24],
+    [192, 88, 99, 0, 24],
+    [192, 168, 0, 0, 16],
+    [198, 18, 0, 0, 15],
+    [198, 51, 100, 0, 24],
+    [203, 0, 113, 0, 24],
+  ];
+  for (const cdir of cidrs) {
+    if (inCidr(ip, ipv4ToInt(cdir[0], cdir[1], cdir[2], cdir[3]), cdir[4])) return true;
+  }
+  return false;
+}
+
+function parseIPv4(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const parts = [+m[1], +m[2], +m[3], +m[4]];
+  if (parts.some((n) => n > 255)) return null;
+  return parts;
+}
+
+function expandIPv6(input) {
+  let h = String(input || '').toLowerCase();
+  const zone = h.indexOf('%');
+  if (zone !== -1) h = h.slice(0, zone);
+  const v4 = h.match(/^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (v4) {
+    const parts = parseIPv4(v4[2]);
+    if (!parts) return null;
+    const hi = ((parts[0] << 8) | parts[1]).toString(16);
+    const lo = ((parts[2] << 8) | parts[3]).toString(16);
+    h = v4[1] + hi + ':' + lo;
+  }
+  if (h.indexOf(':::') !== -1) return null;
+  const halves = h.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  if (halves.length === 1) {
+    if (left.length !== 8) return null;
+  } else if (8 - (left.length + right.length) < 1) {
+    return null;
+  }
+  const missing = 8 - (left.length + right.length);
+  const all = left.concat(Array(Math.max(missing, 0)).fill('0')).concat(right);
+  if (all.length !== 8) return null;
+  const nums = [];
+  for (const g of all) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    nums.push(parseInt(g, 16));
+  }
+  return nums;
+}
+
+function embeddedIPv4(hi, lo) {
+  return [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255];
+}
+
+function isBlockedIPv6(input) {
+  const groups = expandIPv6(input);
+  if (!groups) return true;
+  if (groups.every((g) => g === 0)) return true;
+  if (groups[7] === 1 && groups.slice(0, 7).every((g) => g === 0)) return true;
+  // ::/96 (deprecated IPv4-compatible) and ::ffff:0:0/96 (IPv4-mapped).
+  if (groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 &&
+      (groups[5] === 0 || groups[5] === 0xffff)) {
+    const v4 = embeddedIPv4(groups[6], groups[7]);
+    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
+  }
+  // 64:ff9b::/96 NAT64. The last 32 bits are an IPv4 address.
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0) {
+    const v4 = embeddedIPv4(groups[6], groups[7]);
+    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
+  }
+  // 64:ff9b:1::/48 is the local-use NAT64 prefix.
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) return true;
+  // 6to4 (2002::/16) embeds an IPv4 address in the next 32 bits.
+  if (groups[0] === 0x2002) {
+    const v4 = embeddedIPv4(groups[1], groups[2]);
+    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
+  }
+  if (groups[0] === 0x100 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0) return true;
+  if (groups[0] === 0x2001 && groups[1] === 0x0002 && groups[2] === 0) return true;
+  if (groups[0] === 0x2001 && groups[1] === 0xdb8) return true;
+  if (groups[0] === 0x2001 && groups[1] === 0) return true;
+  if (groups[0] >= 0xfc00 && groups[0] <= 0xfdff) return true;
+  if (groups[0] >= 0xfe80 && groups[0] <= 0xfebf) return true;
+  if (groups[0] >= 0xfec0 && groups[0] <= 0xfeff) return true;
+  if ((groups[0] & 0xff00) === 0xff00) return true;
+  return false;
+}
+
+function isBlockedHost(hostname) {
+  let host = String(hostname || '').toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) return isBlockedIPv6(host.slice(1, -1));
+  while (host.endsWith('.')) host = host.slice(0, -1);
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.localdomain') || host.endsWith('.home.arpa')) return true;
+  if (host === 'metadata.goog') return true;
+  const v4 = parseIPv4(host);
+  if (v4) return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
+  if (host.indexOf(':') !== -1) return isBlockedIPv6(host);
+  // A single label is a local search name (localhost already covered, plus
+  // "metadata", "router", and similar), not a public API host.
+  if (host.indexOf('.') === -1) return true;
+  return false;
+}
+
+// The custom-provider base URL is caller-supplied and fetched server-side.
+// https only, and the parsed host must not be private, link-local, or reserved.
 function isSafeCustomURL(raw) {
+  if (typeof raw !== 'string' || !raw || raw.length > 4096) return false;
+  if (/[\u0000-\u0020\u007F]/.test(raw)) return false;
   let u;
   try { u = new URL(raw); } catch (_) { return false; }
   if (u.protocol !== 'https:') return false;
-  const host = u.hostname.toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) return false;
-  if (/^\[?::1\]?$/.test(host) || /^\[?f[cd][0-9a-f]{2}:/.test(host)) return false;
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const a = +v4[1], b = +v4[2];
-    if (a === 10 || a === 127 || a === 0) return false;
-    if (a === 192 && b === 168) return false;
-    if (a === 172 && b >= 16 && b <= 31) return false;
-    if (a === 169 && b === 254) return false;
-  }
-  return true;
+  return !isBlockedHost(u.hostname);
 }
 
 // Client tools arrive as JSON Schema function declarations:
@@ -479,7 +679,7 @@ function normalizeStopReason(raw) {
   return STOP_REASON_MAP[raw] || String(raw).toLowerCase();
 }
 
-async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer, collectCitations) {
+async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer, collectCitations, redirectMode) {
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -487,7 +687,15 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer,
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(requestBody),
+    // Custom URLs are caller-supplied. 'manual' keeps a public URL from
+    // 302-ing this Worker at a private or link-local address.
+    redirect: redirectMode === 'manual' ? 'manual' : 'follow',
   });
+
+  if (redirectMode === 'manual' && (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400))) {
+    await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Custom base URL must not redirect' } }) + '\n'));
+    return;
+  }
 
   if (!response.ok) {
     const errText = await response.text().catch(() => response.statusText);
@@ -1048,37 +1256,34 @@ async function sandboxCreate(prov, key, timeoutSec, template) {
   };
 }
 
-async function handleSandbox(path, request) {
-  let body;
-  try { body = await request.json(); } catch (_) {
-    return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
-  }
+async function handleSandbox(path, body, corsOrigin) {
+  const reply = (data, status) => jsonResponse(data, status, corsOrigin);
   const prov = sandboxProvider(body.sandboxProvider);
   // e2bKey is still accepted so an older cached frontend keeps working.
   const key = body.sandboxKey || body.e2bKey;
   if (!key || typeof key !== 'string') {
-    return jsonResponse({ error: { message: 'Missing ' + prov.label + ' API key' } }, 400);
+    return reply({ error: { message: 'Missing ' + prov.label + ' API key' } }, 400);
   }
 
   if (path === '/sandbox/create') {
     const made = await sandboxCreate(prov, key, body.timeoutSec, body.template);
-    if (made.error) return jsonResponse({ error: { message: made.error } }, 502);
-    return jsonResponse(Object.assign({ provider: body.sandboxProvider || 'e2b' }, made), 200);
+    if (made.error) return reply({ error: { message: made.error } }, 502);
+    return reply(Object.assign({ provider: body.sandboxProvider || 'e2b' }, made), 200);
   }
 
   const sandboxId = body.sandboxId;
   if (!validSandboxId(sandboxId)) {
-    return jsonResponse({ error: { message: 'Invalid sandbox id' } }, 400);
+    return reply({ error: { message: 'Invalid sandbox id' } }, 400);
   }
   if (body.domain && !validDomain(body.domain, prov)) {
-    return jsonResponse({ error: { message: 'Invalid sandbox domain for ' + prov.label } }, 400);
+    return reply({ error: { message: 'Invalid sandbox domain for ' + prov.label } }, 400);
   }
 
   if (path === '/sandbox/kill') {
     try {
       await fetch(prov.api + '/sandboxes/' + sandboxId, { method: 'DELETE', headers: { 'X-API-Key': key } });
     } catch (e) { console.error('SANDBOX KILL FAILED:', e.message); }
-    return jsonResponse({ ok: true }, 200);
+    return reply({ ok: true }, 200);
   }
 
   if (path === '/sandbox/keepalive') {
@@ -1091,16 +1296,16 @@ async function handleSandbox(path, request) {
       });
       // Report the real outcome: a keepalive that silently no-ops is how
       // sandboxes end up billing after the user has walked away.
-      if (!res.ok) return jsonResponse({ ok: false, status: res.status }, 200);
+      if (!res.ok) return reply({ ok: false, status: res.status }, 200);
     } catch (e) {
-      return jsonResponse({ ok: false, error: e.message }, 200);
+      return reply({ ok: false, error: e.message }, 200);
     }
-    return jsonResponse({ ok: true, timeout: secs }, 200);
+    return reply({ ok: true, timeout: secs }, 200);
   }
 
   if (path === '/sandbox/exec') {
     const code = typeof body.code === 'string' ? body.code : '';
-    if (!code) return jsonResponse({ error: { message: 'Missing code' } }, 400);
+    if (!code) return reply({ error: { message: 'Missing code' } }, 400);
     const language = body.language === 'bash' ? 'bash' : 'python';
 
     // Base64 the payload and decode it inside the sandbox. Model-written code is
@@ -1142,7 +1347,7 @@ async function handleSandbox(path, request) {
       if (!res.ok) {
         clearTimeout(timer);
         const errText = await res.text().catch(() => res.statusText);
-        return jsonResponse({ error: { message: 'Sandbox exec failed (' + res.status + '): ' + errText.slice(0, 300) } }, 502);
+        return reply({ error: { message: 'Sandbox exec failed (' + res.status + '): ' + errText.slice(0, 300) } }, 502);
       }
 
       await readConnectStream(res, (flags, msg) => {
@@ -1173,7 +1378,7 @@ async function handleSandbox(path, request) {
       const aborted = e.name === 'AbortError';
       const oPart = concatBytes(stdoutChunks, OUTPUT_CAP);
       const ePart = concatBytes(stderrChunks, OUTPUT_CAP);
-      return jsonResponse({
+      return reply({
         ok: false,
         stdout: utf8(oPart.bytes),
         stderr: utf8(ePart.bytes) + tailErr + (aborted ? '\n[timed out]' : '\n' + e.message),
@@ -1189,7 +1394,7 @@ async function handleSandbox(path, request) {
     const outPart = concatBytes(stdoutChunks, OUTPUT_CAP);
     const errPart = concatBytes(stderrChunks, OUTPUT_CAP);
 
-    return jsonResponse({
+    return reply({
       ok: exitCode === 0 || exitCode === null,
       stdout: utf8(outPart.bytes),
       stderr: utf8(errPart.bytes) + tailErr,
@@ -1199,43 +1404,55 @@ async function handleSandbox(path, request) {
     }, 200);
   }
 
-  return jsonResponse({ error: { message: 'Unknown sandbox route' } }, 404);
+  return reply({ error: { message: 'Unknown sandbox route' } }, 404);
 }
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders() });
-    }
+    const browserOrigin = normalizeOrigin(request.headers.get('Origin'));
+    const reply = (data, status, corsOrigin) => jsonResponse(data, status, corsOrigin == null ? browserOrigin : corsOrigin);
 
-    if (request.method === 'GET') {
-      return jsonResponse({ error: { message: 'Method not allowed. Use POST.' } }, 405);
+    if (request.method === 'OPTIONS') {
+      const auth = authorize(request, env, null);
+      // Preflight has no key yet. A 401 still needs CORS so the browser can
+      // send X-Omni-Proxy-Key. A disallowed origin gets no allow header.
+      const allowPreflight = auth.ok || auth.status === 401 || !!auth.corsOrigin;
+      if (!allowPreflight) return new Response(null, { status: 403, headers: corsHeaders('') });
+      return new Response(null, { status: 204, headers: corsHeaders(auth.corsOrigin) });
     }
 
     if (request.method !== 'POST') {
-      return jsonResponse({ error: { message: 'Method not allowed. Use POST.' } }, 405);
-    }
-
-    // Every POST used to fall through to the chat proxy regardless of path, so
-    // sandbox routes have to be dispatched before that fallback is reached.
-    const postPath = new URL(request.url).pathname;
-    if (postPath.indexOf('/sandbox/') === 0) {
-      return handleSandbox(postPath, request);
+      return reply({ error: { message: 'Method not allowed. Use POST.' } }, 405);
     }
 
     let body;
     try {
       body = await request.json();
     } catch {
-      return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
+      return reply({ error: { message: 'Invalid JSON body' } }, 400);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return reply({ error: { message: 'Invalid JSON body' } }, 400);
+    }
+
+    const auth = authorize(request, env, body);
+    if (!auth.ok) return reply({ error: { message: auth.message } }, auth.status, auth.corsOrigin);
+    // Drop the proxy key before any provider or sandbox code sees the body.
+    if (Object.prototype.hasOwnProperty.call(body, 'proxyKey')) delete body.proxyKey;
+
+    // Every POST used to fall through to the chat proxy regardless of path, so
+    // sandbox routes have to be dispatched before that fallback is reached.
+    const postPath = new URL(request.url).pathname;
+    if (postPath.indexOf('/sandbox/') === 0) {
+      return handleSandbox(postPath, body, auth.corsOrigin);
     }
 
     const { provider, model, apiKey, messages, temperature, max_tokens, baseURL, searchMode: rawSearchMode, searchBackend: rawSearchBackend, searchDepth: rawSearchDepth, tavilyKey: rawTavilyKey, effort, tools: rawTools } = body;
 
-    if (!provider) return jsonResponse({ error: { message: 'Missing provider' } }, 400);
-    if (!model) return jsonResponse({ error: { message: 'Missing model' } }, 400);
-    if (!apiKey) return jsonResponse({ error: { message: 'Missing API key' } }, 400);
-    if (!messages || !messages.length) return jsonResponse({ error: { message: 'Missing messages' } }, 400);
+    if (!provider) return reply({ error: { message: 'Missing provider' } }, 400, auth.corsOrigin);
+    if (!model) return reply({ error: { message: 'Missing model' } }, 400, auth.corsOrigin);
+    if (!apiKey) return reply({ error: { message: 'Missing API key' } }, 400, auth.corsOrigin);
+    if (!messages || !messages.length) return reply({ error: { message: 'Missing messages' } }, 400, auth.corsOrigin);
 
     const agentTools = sanitizeTools(rawTools);
     // Server-side search and agent tools do not mix: Gemini rejects googleSearch
@@ -1652,11 +1869,11 @@ export default {
               break;
             }
             if (!isSafeCustomURL(baseURL)) {
-              await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Custom base URL must be https and must not point at a private or loopback address' } }) + '\n'));
+              await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Custom base URL must be https and must not point at a private, link-local, or reserved address' } }) + '\n'));
               break;
             }
             const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
-            await streamOpenAICompatible(baseURL, apiKey, reqBody, encoder, writer);
+            await streamOpenAICompatible(baseURL, apiKey, reqBody, encoder, writer, false, 'manual');
             break;
           }
           default:
@@ -1669,6 +1886,6 @@ export default {
     })();
 
     ctx.waitUntil(streamPromise);
-    return streamToNDJSON(readable);
+    return streamToNDJSON(readable, auth.corsOrigin);
   },
 };

@@ -2283,7 +2283,13 @@
 
 
     .metrics-panel { display: none; }
-    .metrics-row.open .metrics-panel { display: block; }
+    /* Capped so an open panel scrolls inside itself instead of eating the
+       message list. The phone sheet overrides this with its own max-height. */
+    .metrics-row.open .metrics-panel {
+      display: block;
+      max-height: min(48vh, 440px);
+      overflow-y: auto;
+    }
 
     .metrics-grid {
       display: grid;
@@ -2292,8 +2298,24 @@
       padding: 4px 0 8px;
     }
 
-    /* Sheet furniture: only ever visible once the panel is a bottom sheet. */
+    /* Close control. Hidden while collapsed; on desktop just the button,
+       since the toggle row already names the panel. Phones restyle the
+       whole bar into a sheet header. */
     .metrics-sheet-head { display: none; }
+
+    .metrics-row.open .metrics-sheet-head {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--bg);
+      padding: 0 2px 6px;
+    }
+
+    .metrics-row.open .metrics-sheet-head span { display: none; }
 
     .metrics-sheet-close {
       border: none;
@@ -3037,7 +3059,7 @@
         animation: slideUpSheet 0.22s cubic-bezier(0.22, 1, 0.36, 1);
       }
 
-      .metrics-sheet-head {
+      .metrics-row.open .metrics-sheet-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -3052,6 +3074,8 @@
         color: var(--text-secondary);
         z-index: 1;
       }
+
+      .metrics-row.open .metrics-sheet-head span { display: inline; }
 
       .metrics-grid {
         grid-template-columns: repeat(2, 1fr);
@@ -4420,6 +4444,7 @@
           title: asIncognito ? 'Incognito chat' : 'New chat',
           messages: [],
           createdAt: Date.now(),
+          updatedAt: Date.now(),
           metrics: null,
           incognito: !!asIncognito,
         };
@@ -4452,6 +4477,26 @@
             return;
           }
         }
+      }
+
+      // Last activity wins. Chats saved before updatedAt existed fall back to
+      // createdAt, which is the order they already had.
+      function chatRecency(chat) {
+        return (chat && (chat.updatedAt || chat.createdAt)) || 0;
+      }
+
+      function compareChats(a, b) {
+        var pa = a.pinnedAt ? 1 : 0;
+        var pb = b.pinnedAt ? 1 : 0;
+        if (pa !== pb) return pb - pa;
+        var ra = chatRecency(a);
+        var rb = chatRecency(b);
+        if (ra !== rb) return rb - ra;
+        return (b.createdAt || 0) - (a.createdAt || 0);
+      }
+
+      function touchChat(chat) {
+        if (chat) chat.updatedAt = Date.now();
       }
 
       function deriveTitle(text) {
@@ -5057,11 +5102,7 @@
           list.appendChild(empty);
           return;
         }
-        var sorted = filtered.slice().sort(function(a, b) {
-          var pa = a.pinnedAt || 0;
-          var pb = b.pinnedAt || 0;
-          return pb - pa;
-        });
+        var sorted = filtered.slice().sort(compareChats);
         sorted.forEach(function(chat) {
           var btn = document.createElement('button');
           btn.type = 'button';
@@ -5551,7 +5592,7 @@
         if (!editingState) return;
         if (activeChatId in streamControllers) return;
         var text = composerInput.value.trim();
-        if (!text) return;
+        if (!text && !pendingFiles.length) return;
         var chat = getActiveChat();
         if (!chat || chat.id !== editingState.chatId) { cancelMessageEdit(); return; }
         var msgIndex = editingState.msgIndex;
@@ -5562,6 +5603,7 @@
         msg._apiContent = payload.userContent;
         chat.messages = chat.messages.slice(0, msgIndex + 1);
         chat.metrics = null;
+        touchChat(chat);
         if (!chat.incognito) persistChats(chat);
         editingState = null;
         renderEditBanner();
@@ -5625,6 +5667,7 @@
             sendMessage();
           } else {
             msg.content = next;
+            touchChat(chat);
             if (!chat.incognito) persistChats(chat);
             renderMessages();
             placeComposer();
@@ -7177,11 +7220,38 @@
         return { userContent: userContent, displayContent: displayContent };
       }
 
+      // Upstream bodies can be a full JSON document. The toast and the transcript
+      // only ever get a short sentence; the raw text stays in the console.
+      function friendlyErrorText(raw) {
+        var msg = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+        if (!msg) return 'The provider returned an error.';
+        var coded = msg.match(/^(?:Provider error|HTTP) (\d{3})\b/);
+        if (coded || msg.charAt(0) === '{' || msg.charAt(0) === '[' || msg.length > 240) {
+          console.error('Provider error withheld from the UI:', msg.slice(0, 2000));
+        }
+        if (coded) return providerStatusText(Number(coded[1]));
+        if (msg.charAt(0) === '{' || msg.charAt(0) === '[' || msg.length > 240) return 'The provider returned an error.';
+        return msg;
+      }
+
+      function providerStatusText(status) {
+        if (status === 401 || status === 403) return 'The provider rejected the API key.';
+        if (status === 404) return 'The provider could not find that model.';
+        if (status === 408) return 'The provider timed out. Try again.';
+        if (status === 413) return 'The request was too large for the provider.';
+        if (status === 429) return 'The provider rate limit was reached. Try again in a moment.';
+        if (status === 402) return 'The provider billing limit was reached.';
+        if (status === 400 || status === 422) return 'The provider rejected the request.';
+        if (status >= 500) return 'The provider is temporarily unavailable.';
+        if (status) return 'The provider returned an error (HTTP ' + status + ').';
+        return 'The provider returned an error.';
+      }
+
       async function sendMessage(opts) {
         opts = opts || {};
         var text = composerInput.value.trim();
         if (activeChatId in streamControllers) return;
-        if (!opts.skipUserPush && !text) return;
+        if (!opts.skipUserPush && !text && !pendingFiles.length) return;
 
         if (!settings.apiEndpoint) { showToast('Set your API endpoint in Settings first'); return; }
         var effectiveKey = settings.apiKeys[settings.provider] || settings.apiKey;
@@ -7189,6 +7259,7 @@
 
         var chat = getActiveChat();
         if (!chat) { chat = createChat({ asIncognito: incognito }); }
+        touchChat(chat);
 
         var payload = null;
         var userContent = text;
@@ -7198,7 +7269,11 @@
           userContent = payload.userContent;
           displayContent = payload.displayContent;
           chat.messages.push({ role: 'user', content: displayContent, _apiContent: userContent });
-          updateChatTitle(chat, text);
+          var titleSource = text;
+          if (!titleSource && pendingFiles.length) {
+            titleSource = pendingFiles.length === 1 ? (pendingFiles[0].name || 'Attachment') : (pendingFiles.length + ' attachments');
+          }
+          updateChatTitle(chat, titleSource);
           if (!chat.incognito) persistChats();
         }
 
@@ -7609,8 +7684,71 @@
             if ((split.text || split.think) && isActive()) updateLastAssistantMessage(assistantMsg);
           }
 
+          // interrupted keeps a Stop mid-thought from running the normal flush,
+          // which would treat an unclosed reasoning block as a plain answer and
+          // drop it out of the thinking panel.
+          var thinkSettled = false;
+          function settleThinkSplitter(interrupted) {
+            if (thinkSettled) return;
+            thinkSettled = true;
+            var inThought = thinkSplit.inThink
+              || (thinkSplit.presumed && !thinkSplit.everClosed)
+              || (thinkSplit.harmony && thinkSplit.hState === 'message' && thinkSplit.hChannel && thinkSplit.hChannel !== 'final');
+            if (interrupted && inThought) {
+              var rest = thinkSplit.buf || '';
+              thinkSplit.buf = '';
+              if (rest && settings.thinking) assistantMsg.thinking = (assistantMsg.thinking || '') + rest;
+              if (isActive()) updateLastAssistantMessage(assistantMsg);
+              return;
+            }
+            var tail = flushThinkSplitter(thinkSplit);
+            if (tail.unpresume) {
+              if (settings.implicitThinkModels && settings.implicitThinkModels[thinkKey]) {
+                delete settings.implicitThinkModels[thinkKey];
+                saveSettings();
+              }
+              var restored = (assistantMsg.thinking || '') + (tail.text || '');
+              assistantMsg.thinking = '';
+              assistantMsg.content += assistantMsg.content ? restored : restored.replace(/^\s+/, '');
+            } else {
+              if (tail.think && settings.thinking) assistantMsg.thinking = (assistantMsg.thinking || '') + tail.think;
+              if (tail.text) assistantMsg.content += tail.text;
+            }
+            if (isActive()) updateLastAssistantMessage(assistantMsg);
+          }
+
+          var turnAborted = function() {
+            return !!(streamControllers[chat.id] && streamControllers[chat.id].signal.aborted);
+          };
+
+          // reader.read() does not always reject when the user hits Stop — a
+          // stalled socket can leave the turn parked in the thinking phase and
+          // the partial reasoning never gets committed. Race the abort signal
+          // so Stop always settles the turn.
+          function readWithStop() {
+            var signal = streamControllers[chat.id] && streamControllers[chat.id].signal;
+            if (!signal) return reader.read();
+            return new Promise(function(resolve, reject) {
+              var settled = false;
+              function finish(fn, value) {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                fn(value);
+              }
+              function onAbort() {
+                try { reader.cancel(); } catch (_) {}
+                finish(reject, Object.assign(new Error('aborted'), { name: 'AbortError' }));
+              }
+              if (signal.aborted) { onAbort(); return; }
+              signal.addEventListener('abort', onAbort);
+              reader.read().then(function(v) { finish(resolve, v); }, function(err) { finish(reject, err); });
+            });
+          }
+
+          try {
           while (true) {
-            var readResult = await reader.read();
+            var readResult = await readWithStop();
             if (readResult.done) break;
 
             buffer += decoder.decode(readResult.value, { stream: true });
@@ -7700,26 +7838,35 @@
                 }
               }
 
-              if (event.error) { throw new Error(event.error.message || event.error || 'Stream error'); }
+              if (event.error) {
+                var rawErr = event.error.message || event.error;
+                throw new Error(typeof rawErr === 'string' ? rawErr : 'The provider returned an error.');
+              }
             }
           }
 
-          var tail = flushThinkSplitter(thinkSplit);
-          if (tail.unpresume) {
-            // Guessed wrong: this reply had no reasoning block after all, so put
-            // everything back in the answer and stop assuming for this model.
-            if (settings.implicitThinkModels && settings.implicitThinkModels[thinkKey]) {
-              delete settings.implicitThinkModels[thinkKey];
-              saveSettings();
+          } catch (turnErr) {
+            var stopped = turnErr.name === 'AbortError' || turnAborted();
+            if (stopped && buffer && buffer.trim()) {
+              try {
+                var leftoverPayload = buffer.trim();
+                if (leftoverPayload.indexOf('data:') === 0) leftoverPayload = leftoverPayload.slice(5).trim();
+                var leftover = JSON.parse(leftoverPayload);
+                if (leftover.thinking_delta && settings.thinking && typeof leftover.thinking_delta === 'string') {
+                  assistantMsg.thinking = (assistantMsg.thinking || '') + leftover.thinking_delta;
+                } else if (typeof leftover.delta === 'string' && leftover.delta) {
+                  applyVisibleDelta(leftover.delta);
+                }
+              } catch (_) { /* partial line, nothing to keep */ }
             }
-            var restored = (assistantMsg.thinking || '') + (tail.text || '');
-            assistantMsg.thinking = '';
-            assistantMsg.content += assistantMsg.content ? restored : restored.replace(/^\s+/, '');
-          } else {
-            if (tail.think && settings.thinking) assistantMsg.thinking = (assistantMsg.thinking || '') + tail.think;
-            if (tail.text) assistantMsg.content += tail.text;
+            settleThinkSplitter(stopped);
+            throw turnErr;
           }
-          if (isActive()) updateLastAssistantMessage(assistantMsg);
+          if (turnAborted()) {
+            settleThinkSplitter(true);
+            throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+          }
+          settleThinkSplitter(false);
           turn.end_ms = performance.now();
 
           return toolOrder.map(function(k) {
@@ -7796,12 +7943,17 @@
         } catch (err) {
           if (err.name === 'AbortError') {
             if (!assistantMsg.content) assistantMsg.content = '*(Generation stopped)*';
+            // A thought that was still streaming stays open, with whatever
+            // reasoning already arrived. Closing it here is what made Stop
+            // look like the reasoning had been thrown away.
+            if (!(assistantMsg.thinking && assistantMsg.thinkingComplete === false)) assistantMsg.thinkingComplete = true;
           } else {
             console.error(err);
-            if (!assistantMsg.content) assistantMsg.content = 'Error: ' + err.message;
-            if (isActive()) showToast(err.message || 'Failed to reach endpoint');
+            var shownErr = friendlyErrorText(err && err.message);
+            if (!assistantMsg.content) assistantMsg.content = 'Error: ' + shownErr;
+            if (isActive()) showToast(shownErr || 'Failed to reach endpoint');
+            assistantMsg.thinkingComplete = true;
           }
-          assistantMsg.thinkingComplete = true;
           // A reply that died halfway still cost something. Without this the bar
           // keeps showing the previous reply's numbers as if they were this one's.
           finalizeMetrics(true);
@@ -7838,9 +7990,13 @@
         composerInput.style.height = Math.min(composerInput.scrollHeight, 180) + 'px';
       }
 
+      function composerHasPayload() {
+        return !!composerInput.value.trim() || pendingFiles.length > 0;
+      }
+
       function updateSendBtn() {
         var isStreamingActive = activeChatId in streamControllers;
-        var has = !!composerInput.value.trim();
+        var has = composerHasPayload();
         sendBtn.disabled = isStreamingActive || !has;
         sendBtn.classList.toggle('ready', has && !isStreamingActive);
       }
@@ -7986,7 +8142,9 @@
             if (wrap) closeEffortMenu(wrap);
           }
           if (menus.length) e.preventDefault();
-          if (metricsRow.classList.contains('open') && isMetricsSheet()) {
+          // Escape leaves the metrics panel on every width. Skip it when this
+          // keystroke already dismissed a menu stacked on top of the panel.
+          if (!menus.length && metricsRow.classList.contains('open') && !metricsEscapeBlocked()) {
             e.preventDefault();
             closeMetricsPanel();
           }
@@ -8103,11 +8261,33 @@
 
       function closeMetricsPanel() { setMetricsOpen(false); }
 
+      // Settings, the code preview, and the pickers own Escape first. Checked
+      // here because this listener is registered before theirs.
+      function metricsEscapeBlocked() {
+        if (settingsModal.classList.contains('open')) return true;
+        var preview = $('codePreviewModal');
+        if (preview && preview.classList.contains('open')) return true;
+        var modelWrap = $('modelPickerWrap');
+        if (modelWrap && modelWrap.classList.contains('open')) return true;
+        var providerWrap = $('providerPickerWrap');
+        if (providerWrap && providerWrap.classList.contains('open')) return true;
+        var slash = $('slashMenu');
+        if (slash && slash.classList.contains('visible')) return true;
+        return false;
+      }
+
       $('metricsToggle').addEventListener('click', function() {
         setMetricsOpen(!metricsRow.classList.contains('open'));
       });
       $('metricsSheetClose').addEventListener('click', closeMetricsPanel);
       $('metricsBackdrop').addEventListener('click', closeMetricsPanel);
+      // Clicking the conversation, the composer, or the backdrop dismisses the
+      // panel. The toggle and the sheet itself sit inside #metricsRow.
+      document.addEventListener('click', function(e) {
+        if (!metricsRow.classList.contains('open')) return;
+        if (metricsRow.contains(e.target)) return;
+        closeMetricsPanel();
+      });
       // Rotating to landscape turns the sheet back into an inline block, so the
       // backdrop has to go with it or it covers a panel that is no longer there.
       window.addEventListener('resize', function() {
@@ -8828,7 +9008,7 @@
 
           chats = chats.filter(function(c) { return !c.incognito; }).map(function(c) { c.incognito = false; return c; });
           chats.forEach(migrateChatBranches);
-          chats.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+          chats.sort(compareChats);
 
           if (activeChatId && !chats.some(function(c) { return c.id === activeChatId; })) {
             activeChatId = chats.length ? chats[0].id : null;

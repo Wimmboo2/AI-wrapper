@@ -679,6 +679,54 @@ function normalizeStopReason(raw) {
   return STOP_REASON_MAP[raw] || String(raw).toLowerCase();
 }
 
+function providerStatusText(status) {
+  const code = Number(status) || 0;
+  if (code === 401 || code === 403) return 'The provider rejected the API key.';
+  if (code === 404) return 'The provider could not find that model.';
+  if (code === 408) return 'The provider timed out. Try again.';
+  if (code === 413) return 'The request was too large for the provider.';
+  if (code === 429) return 'The provider rate limit was reached. Try again in a moment.';
+  if (code === 402) return 'The provider billing limit was reached.';
+  if (code === 400 || code === 422) return 'The provider rejected the request.';
+  if (code >= 500) return 'The provider is temporarily unavailable.';
+  if (code) return 'The provider returned an error (HTTP ' + code + ').';
+  return 'The provider returned an error.';
+}
+
+// A short sentence from an error JSON document, or nothing when the body is a
+// dump we should not put in front of the user.
+function shortProviderDetail(raw) {
+  const text = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  let detail = '';
+  try {
+    const parsed = JSON.parse(text);
+    const err = parsed && parsed.error;
+    const msg = (err && typeof err === 'object' && (err.message || err.status))
+      || (typeof err === 'string' ? err : '')
+      || (parsed && typeof parsed.message === 'string' ? parsed.message : '');
+    if (typeof msg === 'string') detail = msg;
+  } catch (_) {
+    if (text.charAt(0) !== '{' && text.charAt(0) !== '[') detail = text;
+  }
+  detail = String(detail || '').replace(/\s+/g, ' ').trim();
+  if (!detail || detail.length > 140 || /[{}[\]]/.test(detail)) return '';
+  return detail;
+}
+
+// Logs the raw upstream body and returns the sentence the client may show.
+function publicProviderError(status, raw, fallback) {
+  const text = raw == null ? '' : String(raw);
+  console.error('PROVIDER ERROR', status || '', text.slice(0, 2000));
+  const detail = shortProviderDetail(text);
+  if (status) {
+    const base = providerStatusText(status);
+    return detail ? base.replace(/\.$/, '') + ': ' + detail : base;
+  }
+  if (detail) return detail;
+  return fallback || 'The provider returned an error.';
+}
+
 async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer, collectCitations, redirectMode) {
   const response = await fetch(url, {
     method: 'POST',
@@ -699,7 +747,7 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer,
 
   if (!response.ok) {
     const errText = await response.text().catch(() => response.statusText);
-    await writer.write(encoder.encode(JSON.stringify({ error: { message: `Provider error ${response.status}: ${errText}` } }) + '\n'));
+    await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(response.status, errText) } }) + '\n'));
     return;
   }
 
@@ -863,7 +911,7 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
 
   if (!response.ok) {
     const errText = await response.text().catch(() => response.statusText);
-    await writer.write(encoder.encode(JSON.stringify({ error: { message: `Provider error ${response.status}: ${errText}` } }) + '\n'));
+    await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(response.status, errText) } }) + '\n'));
     return;
   }
 
@@ -971,7 +1019,7 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
             await writer.write(encoder.encode(JSON.stringify({ stop: { reason: 'tool_use' } }) + '\n'));
           }
         } else if (type === 'error') {
-          await writer.write(encoder.encode(JSON.stringify({ error: { message: parsed.error?.message || 'Anthropic error' } }) + '\n'));
+          await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(null, parsed.error?.message || '', 'The provider returned an error.') } }) + '\n'));
         }
       } catch (_) { /* skip */ }
     }
@@ -1002,7 +1050,7 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
 
   if (!response.ok) {
     const errText = await response.text().catch(() => response.statusText);
-    await writer.write(encoder.encode(JSON.stringify({ error: { message: `Provider error ${response.status}: ${errText}` } }) + '\n'));
+    await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(response.status, errText) } }) + '\n'));
     return;
   }
 
@@ -1041,7 +1089,7 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
       try {
         const parsed = JSON.parse(data);
         if (parsed.error) {
-          await writer.write(encoder.encode(JSON.stringify({ error: { message: parsed.error.message || 'Google API error' } }) + '\n'));
+          await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(parsed.error.code, parsed.error.message || '', 'The provider returned an error.') } }) + '\n'));
           continue;
         }
 

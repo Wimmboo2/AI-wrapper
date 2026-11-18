@@ -333,42 +333,69 @@ function expandIPv6(input) {
   return nums;
 }
 
-function embeddedIPv4(hi, lo) {
-  return [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255];
-}
-
 function isBlockedIPv6(input) {
   const groups = expandIPv6(input);
   if (!groups) return true;
   if (groups.every((g) => g === 0)) return true;
   if (groups[7] === 1 && groups.slice(0, 7).every((g) => g === 0)) return true;
-  // ::/96 (deprecated IPv4-compatible) and ::ffff:0:0/96 (IPv4-mapped).
-  if (groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 &&
+  // IPv4-compatible (::/96), IPv4-mapped (::ffff:0:0/96) and IPv4-translated
+  // (::ffff:0:0:0/96). The whole prefix is an alias for an IPv4 address, so
+  // a private, link-local, or CGNAT target can be written here without a
+  // dotted quad. Block the prefix, not only the embedded private ranges.
+  if (groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 &&
+      (groups[4] === 0 || groups[4] === 0xffff) &&
       (groups[5] === 0 || groups[5] === 0xffff)) {
-    const v4 = embeddedIPv4(groups[6], groups[7]);
-    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
+    return true;
   }
-  // 64:ff9b::/96 NAT64. The last 32 bits are an IPv4 address.
-  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0) {
-    const v4 = embeddedIPv4(groups[6], groups[7]);
-    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
-  }
-  // 64:ff9b:1::/48 is the local-use NAT64 prefix.
+  // Well-known NAT64 (64:ff9b::/96) and the local-use prefix (64:ff9b:1::/48).
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0) return true;
   if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) return true;
   // 6to4 (2002::/16) embeds an IPv4 address in the next 32 bits.
-  if (groups[0] === 0x2002) {
-    const v4 = embeddedIPv4(groups[1], groups[2]);
-    return isBlockedIPv4(v4[0], v4[1], v4[2], v4[3]);
-  }
+  if (groups[0] === 0x2002) return true;
+  // Discard (100::/64), benchmarking (2001:2::/48), documentation (2001:db8::/32).
   if (groups[0] === 0x100 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0) return true;
   if (groups[0] === 0x2001 && groups[1] === 0x0002 && groups[2] === 0) return true;
   if (groups[0] === 0x2001 && groups[1] === 0xdb8) return true;
+  // ORCHIDv1 (2001:10::/28) and ORCHIDv2 (2001:20::/28).
+  if (groups[0] === 0x2001 && groups[1] >= 0x0010 && groups[1] <= 0x001f) return true;
+  if (groups[0] === 0x2001 && groups[1] >= 0x0020 && groups[1] <= 0x002f) return true;
+  // Teredo (2001::/32).
   if (groups[0] === 0x2001 && groups[1] === 0) return true;
   if (groups[0] >= 0xfc00 && groups[0] <= 0xfdff) return true;
   if (groups[0] >= 0xfe80 && groups[0] <= 0xfebf) return true;
   if (groups[0] >= 0xfec0 && groups[0] <= 0xfeff) return true;
   if ((groups[0] & 0xff00) === 0xff00) return true;
   return false;
+}
+
+// Wildcard DNS that answers with whatever address the name encodes.
+const REBIND_SUFFIXES = ['.nip.io', '.sslip.io', '.xip.io', '.localtest.me', '.lvh.me', '.vcap.me', '.traefik.me'];
+
+function ipv4PartsBlocked(parts) {
+  if (!parts || parts.some((n) => n > 255)) return false;
+  return isBlockedIPv4(parts[0], parts[1], parts[2], parts[3]);
+}
+
+function isRebindHost(host) {
+  for (let i = 0; i < REBIND_SUFFIXES.length; i++) {
+    const suffix = REBIND_SUFFIXES[i];
+    if (host === suffix.slice(1) || host.endsWith(suffix)) return true;
+  }
+  const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\./.exec(host);
+  if (dotted && ipv4PartsBlocked([+dotted[1], +dotted[2], +dotted[3], +dotted[4]])) return true;
+  const dashed = /^(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})\./.exec(host);
+  if (dashed && ipv4PartsBlocked([+dashed[1], +dashed[2], +dashed[3], +dashed[4]])) return true;
+  return false;
+}
+
+// Hex, octal, or short IPv4 the URL parser left as a hostname. A canonical
+// dotted quad never reaches this; parseIPv4 already handled it.
+function isAlternateIPv4(host) {
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) return false;
+  if (!parts.every((p) => /^(0x[0-9a-f]+|\d+)$/i.test(p))) return false;
+  if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && String(+p) === p && +p <= 255)) return false;
+  return true;
 }
 
 function isBlockedHost(hostname) {
@@ -385,6 +412,7 @@ function isBlockedHost(hostname) {
   // A single label is a local search name (localhost already covered, plus
   // "metadata", "router", and similar), not a public API host.
   if (host.indexOf('.') === -1) return true;
+  if (isAlternateIPv4(host) || isRebindHost(host)) return true;
   return false;
 }
 

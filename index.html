@@ -929,10 +929,42 @@
       font-size: inherit;
     }
 
-    .message-content ul, .message-content ol {
-      margin: 0.45em 0 0.8em 1.35em;
+    .message-content ul,
+    .message-content ol {
+      margin: 0.45em 0 0.8em;
+      padding-left: 1.4em;
     }
-    .message-content li { margin-bottom: 0.28em; }
+    .message-content ul { list-style: disc outside; }
+    .message-content ol { list-style: decimal outside; }
+    .message-content li { margin-bottom: 0.28em; display: list-item; }
+
+    .message-content .md-table-wrap {
+      overflow-x: auto;
+      margin: 0.85em 0 1em;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .message-content table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: inherit;
+      line-height: 1.5;
+    }
+    .message-content th,
+    .message-content td {
+      padding: 8px 12px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      word-break: break-word;
+    }
+    .message-content th {
+      font-weight: 550;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+    }
+    .message-content tbody tr:last-child td { border-bottom: none; }
 
     .message-content h1, .message-content h2, .message-content h3 {
       font-weight: 550;
@@ -4975,12 +5007,68 @@
 
       function renderMarkdown(text) {
         if (!text) return '';
-        var html = escapeHtml(text);
-        html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+        // Fenced and inline code are pulled out first so tables, lists, and
+        // emphasis cannot rewrite them. Block tokens stay out of <p> wrappers.
+        var slots = [];
+        var slot = '\uE000' + Math.random().toString(36).slice(2) + 's';
+        function stash(html, block) {
+          var token = slot + (block ? 'B' : 'I') + slots.length + slot;
+          slots.push(html);
+          return token;
+        }
+        function escapeReg(s) {
+          return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+        function renderInline(s) {
+          s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+          s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+          s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+          s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, href) {
+            var safe = sanitizeLinkHref(href);
+            if (!safe) return '[' + label + '](' + href + ')';
+            return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+          });
+          return s;
+        }
+        function splitTableRow(line) {
+          var s = String(line).replace(/^\s+|\s+$/g, '');
+          if (s.charAt(0) === '|') s = s.slice(1);
+          if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
+          var cells = [];
+          var cur = '';
+          for (var c = 0; c < s.length; c++) {
+            if (s.charAt(c) === '\\' && s.charAt(c + 1) === '|') { cur += '|'; c++; continue; }
+            if (s.charAt(c) === '|') { cells.push(cur.replace(/^\s+|\s+$/g, '')); cur = ''; continue; }
+            cur += s.charAt(c);
+          }
+          cells.push(cur.replace(/^\s+|\s+$/g, ''));
+          return cells;
+        }
+        function isSeparatorRow(line) {
+          if (line.indexOf('|') === -1) return false;
+          var cells = splitTableRow(line);
+          if (!cells.length) return false;
+          for (var c = 0; c < cells.length; c++) {
+            if (!/^:?-{3,}:?$/.test(cells[c])) return false;
+          }
+          return true;
+        }
+        function isTableRow(line) {
+          var t = line.replace(/^\s+|\s+$/g, '');
+          return t.charAt(0) === '|' && t.indexOf('|', 1) !== -1 && !isSeparatorRow(t);
+        }
+        function listKind(line) {
+          if (/^[-*+] .+/.test(line)) return 'ul';
+          if (/^\d+\. .+/.test(line)) return 'ol';
+          return '';
+        }
+
+        var src = escapeHtml(text).replace(/\r\n?/g, '\n');
+        src = src.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
           var cleanLang = (lang || 'code').trim().toLowerCase();
           var isPreviewable = cleanLang === 'html' || cleanLang === 'svg' || cleanLang === 'xml' || cleanLang === 'web';
           var previewBtnHtml = isPreviewable ? '<button class="code-block-btn code-block-preview" type="button" title="Live Preview">' + ICONS.play + ' <span>Preview</span></button>' : '';
-          return '<div class="code-block-container">' +
+          return stash('<div class="code-block-container">' +
             '<div class="code-block-header">' +
               '<span class="code-block-lang">' + escapeHtml(cleanLang) + '</span>' +
               '<div class="code-block-actions">' +
@@ -4991,30 +5079,72 @@
               '</div>' +
             '</div>' +
             '<pre><code class="language-' + escapeHtml(cleanLang) + '">' + code.replace(/\n$/, '') + '</code></pre>' +
-          '</div>';
+          '</div>', true);
         });
-        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-        html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-        html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-        html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-        html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
-        html = html.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, function(m) { return '<ul>' + m + '</ul>'; });
-        html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
-        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, href) {
-          var safe = sanitizeLinkHref(href);
-          if (!safe) return '[' + label + '](' + href + ')';
-          return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
-        });
-        return html.split(/\n\n+/).map(function(block) {
+        src = src.replace(/`([^`]+)`/g, function(_, code) { return stash('<code>' + code + '</code>', false); });
+
+        var lines = src.split('\n');
+        var out = [];
+        var i = 0;
+        var blockTokenRe = new RegExp('^' + escapeReg(slot) + 'B\\d+' + escapeReg(slot) + '$');
+        while (i < lines.length) {
+          if (blockTokenRe.test(lines[i].replace(/^\s+|\s+$/g, ''))) {
+            out.push(lines[i]);
+            i++;
+            continue;
+          }
+          if (isTableRow(lines[i]) && i + 1 < lines.length && isSeparatorRow(lines[i + 1]) && splitTableRow(lines[i]).length === splitTableRow(lines[i + 1]).length) {
+            var headers = splitTableRow(lines[i]);
+            i += 2;
+            var rows = [];
+            while (i < lines.length && isTableRow(lines[i])) {
+              rows.push(splitTableRow(lines[i]));
+              i++;
+            }
+            var headHtml = '<tr>' + headers.map(function(cell) { return '<th>' + renderInline(cell) + '</th>'; }).join('') + '</tr>';
+            var bodyHtml = rows.map(function(row) {
+              return '<tr>' + headers.map(function(_, col) { return '<td>' + renderInline(row[col] || '') + '</td>'; }).join('') + '</tr>';
+            }).join('');
+            out.push(stash('<div class="md-table-wrap"><table><thead>' + headHtml + '</thead><tbody>' + bodyHtml + '</tbody></table></div>', true));
+            continue;
+          }
+          var kind = listKind(lines[i]);
+          if (kind) {
+            var items = [];
+            var startNum = '';
+            while (i < lines.length && listKind(lines[i]) === kind) {
+              if (kind === 'ol' && !startNum) {
+                var num = lines[i].match(/^(\d+)\. /);
+                startNum = num ? num[1] : '1';
+              }
+              var item = kind === 'ul' ? lines[i].replace(/^[-*+] /, '') : lines[i].replace(/^\d+\. /, '');
+              items.push('<li>' + renderInline(item) + '</li>');
+              i++;
+            }
+            var open = kind === 'ol' && startNum !== '1' ? '<ol start="' + startNum + '">' : '<' + kind + '>';
+            out.push(stash(open + items.join('') + '</' + kind + '>', true));
+            continue;
+          }
+          var line = lines[i];
+          if (/^### (.+)$/.test(line)) out.push(stash('<h3>' + renderInline(line.slice(4)) + '</h3>', true));
+          else if (/^## (.+)$/.test(line)) out.push(stash('<h2>' + renderInline(line.slice(3)) + '</h2>', true));
+          else if (/^# (.+)$/.test(line)) out.push(stash('<h1>' + renderInline(line.slice(2)) + '</h1>', true));
+          else if (/^&gt; (.+)$/.test(line)) out.push(stash('<blockquote>' + renderInline(line.replace(/^&gt; /, '')) + '</blockquote>', true));
+          else out.push(renderInline(line));
+          i++;
+        }
+
+        var blockLeadRe = new RegExp('^' + escapeReg(slot) + 'B');
+        var html = out.join('\n').split(/\n\n+/).map(function(block) {
           block = block.trim();
           if (!block) return '';
-          if (/^<(h[1-3]|ul|ol|pre|blockquote|div)/.test(block)) return block;
+          if (blockLeadRe.test(block)) return block;
           return '<p>' + block.replace(/\n/g, '<br>') + '</p>';
         }).join('');
+        html = html.replace(new RegExp(escapeReg(slot) + '[BI](\\d+)' + escapeReg(slot), 'g'), function(_, n) {
+          return slots[Number(n)] || '';
+        });
+        return html;
       }
 
       function renderAll() {
@@ -5149,7 +5279,8 @@
             var val = newInput.value.trim();
             if (val) {
               chat.title = val;
-              if (!chat.incognito) persistChats();
+              // persistChats writes IndexedDB only when it receives the chat.
+              if (!chat.incognito) persistChats(chat);
             }
           }
           renderChatList();
@@ -5266,6 +5397,8 @@
         });
         actions.appendChild(copyBtn);
         if (msg.role === 'user') {
+          var versionNav = buildVersionNav(msgIndex);
+          if (versionNav) actions.appendChild(versionNav);
           var editBtn = document.createElement('button');
           editBtn.type = 'button';
           editBtn.className = 'msg-action';
@@ -5547,6 +5680,197 @@
         updateSendBtn();
       }
 
+      // Keys at or after a user turn belong to that turn's reply. Deeper edit
+      // forks (key > idx) belong to later messages and travel with the suffix.
+      function pickKeyed(obj, idx, mode) {
+        var out = {};
+        if (!obj) return out;
+        Object.keys(obj).forEach(function(k) {
+          var n = Number(k);
+          if (isNaN(n)) return;
+          if (mode === 'gt' ? n > idx : n >= idx) out[k] = obj[k];
+        });
+        try { return JSON.parse(JSON.stringify(out)); }
+        catch (e) { return out; }
+      }
+
+      function dropKeyed(obj, idx, mode) {
+        if (!obj) return;
+        Object.keys(obj).forEach(function(k) {
+          var n = Number(k);
+          if (isNaN(n)) return;
+          if (mode === 'gt' ? n > idx : n >= idx) delete obj[k];
+        });
+      }
+
+      function captureFork(chat, idx) {
+        var messages;
+        try { messages = JSON.parse(JSON.stringify(chat.messages.slice(idx))); }
+        catch (e) { messages = chat.messages.slice(idx); }
+        return {
+          messages: messages,
+          _branches: pickKeyed(chat._branches, idx, 'ge'),
+          _branchActive: pickKeyed(chat._branchActive, idx, 'ge'),
+          _liveReplies: pickKeyed(chat._liveReplies, idx, 'ge'),
+          _forks: pickKeyed(chat._forks, idx, 'gt'),
+          _forkActive: pickKeyed(chat._forkActive, idx, 'gt'),
+          _liveForks: pickKeyed(chat._liveForks, idx, 'gt')
+        };
+      }
+
+      function installFork(chat, idx, snap) {
+        var copy;
+        try { copy = JSON.parse(JSON.stringify(snap)); }
+        catch (e) { copy = snap; }
+        chat.messages = chat.messages.slice(0, idx).concat(copy.messages || []);
+        chat.metrics = null;
+        ['_branches', '_branchActive', '_liveReplies'].forEach(function(name) {
+          if (!chat[name]) chat[name] = {};
+          dropKeyed(chat[name], idx, 'ge');
+          var part = copy[name] || {};
+          Object.keys(part).forEach(function(k) { chat[name][k] = part[k]; });
+        });
+        ['_forks', '_forkActive', '_liveForks'].forEach(function(name) {
+          if (!chat[name]) chat[name] = {};
+          dropKeyed(chat[name], idx, 'gt');
+          var part = copy[name] || {};
+          Object.keys(part).forEach(function(k) { chat[name][k] = part[k]; });
+        });
+      }
+
+      function messageAutoTitle(text) {
+        var clean = stripAttachmentMarker(text || '');
+        if (!clean) return '';
+        return deriveTitle(clean);
+      }
+
+      function titleTracksMessage(chat, messageText) {
+        var auto = messageAutoTitle(messageText);
+        return !chat.title || chat.title === auto || chat.title === 'New chat' || chat.title === 'Incognito chat';
+      }
+
+      function retitleFromMessage(chat, messageText) {
+        var next = messageAutoTitle(messageText);
+        chat.title = next || (chat.incognito ? 'Incognito chat' : 'New chat');
+      }
+
+      // Keep the previous wording and every later turn, then start the edited
+      // message as a new version. Cycling uses the same branch-nav as regenerate.
+      function archiveEditedVersion(chat, idx) {
+        if (!chat._forks) chat._forks = {};
+        if (!chat._forkActive) chat._forkActive = {};
+        if (!chat._liveForks) chat._liveForks = {};
+        var key = String(idx);
+        if (!chat._forks[key]) chat._forks[key] = [];
+        var forks = chat._forks[key];
+        var active = chat._forkActive[key];
+        if (active == null || isNaN(Number(active))) active = forks.length;
+        active = Number(active);
+        if (active < 0 || active > forks.length) active = forks.length;
+        var snap = captureFork(chat, idx);
+        if (active < forks.length) {
+          forks[active] = snap;
+          if (chat._liveForks[key]) {
+            forks.push(chat._liveForks[key]);
+            delete chat._liveForks[key];
+          }
+        } else {
+          var dup = false;
+          if (forks.length) {
+            try { dup = JSON.stringify(forks[forks.length - 1].messages) === JSON.stringify(snap.messages); }
+            catch (e2) { dup = false; }
+          }
+          if (!dup) forks.push(snap);
+          delete chat._liveForks[key];
+        }
+        chat._forkActive[key] = forks.length;
+      }
+
+      function commitEditedUserMessage(chat, msgIndex, displayContent, apiContent) {
+        var msg = chat.messages[msgIndex];
+        var oldText = msg.content || '';
+        var tail = chat.messages.length > msgIndex + 1;
+        var changed = oldText !== displayContent;
+        if (!changed) {
+          try {
+            changed = JSON.stringify(msg._apiContent == null ? null : msg._apiContent) !== JSON.stringify(apiContent == null ? null : apiContent);
+          } catch (e) { changed = true; }
+        }
+        if (changed || tail) archiveEditedVersion(chat, msgIndex);
+        if (msgIndex === 0 && titleTracksMessage(chat, oldText)) retitleFromMessage(chat, displayContent);
+        msg.content = displayContent;
+        msg._apiContent = apiContent;
+        chat.messages = chat.messages.slice(0, msgIndex + 1);
+        chat.metrics = null;
+        dropKeyed(chat._branches, msgIndex, 'ge');
+        dropKeyed(chat._branchActive, msgIndex, 'ge');
+        dropKeyed(chat._liveReplies, msgIndex, 'ge');
+        dropKeyed(chat._forks, msgIndex, 'gt');
+        dropKeyed(chat._forkActive, msgIndex, 'gt');
+        dropKeyed(chat._liveForks, msgIndex, 'gt');
+      }
+
+      function cycleMessageFork(msgIndex, direction) {
+        if (activeChatId in streamControllers) return;
+        var chat = getActiveChat();
+        if (!chat || !chat._forks) return;
+        var key = String(msgIndex);
+        var forks = chat._forks[key];
+        if (!forks || !forks.length) return;
+        if (!chat._forkActive) chat._forkActive = {};
+        if (!chat._liveForks) chat._liveForks = {};
+        var active = chat._forkActive[key] != null ? Number(chat._forkActive[key]) : forks.length;
+        if (isNaN(active) || active < 0 || active > forks.length) active = forks.length;
+        var total = forks.length + 1;
+        var track = msgIndex === 0 && titleTracksMessage(chat, chat.messages[0] && chat.messages[0].content);
+        if (active < forks.length) forks[active] = captureFork(chat, msgIndex);
+        else chat._liveForks[key] = captureFork(chat, msgIndex);
+        active = ((active + direction) % total + total) % total;
+        var next = active < forks.length ? forks[active] : chat._liveForks[key];
+        if (!next || !next.messages || !next.messages.length) return;
+        installFork(chat, msgIndex, next);
+        chat._forkActive[key] = active;
+        if (track && chat.messages[0]) retitleFromMessage(chat, chat.messages[0].content);
+        if (!chat.incognito) persistChats(chat);
+        renderMessages();
+        renderChatList();
+        placeComposer();
+      }
+
+      function buildVersionNav(msgIndex) {
+        var chat = getActiveChat();
+        if (!chat || !chat._forks) return null;
+        var forks = chat._forks[String(msgIndex)];
+        if (!forks || !forks.length) return null;
+        var branchCount = forks.length;
+        var branchNav = document.createElement('span');
+        branchNav.className = 'branch-nav';
+        var prevBtn = document.createElement('button');
+        prevBtn.type = 'button';
+        prevBtn.className = 'msg-action branch-btn';
+        prevBtn.innerHTML = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 3 5 7 9 11"/></svg>';
+        prevBtn.title = 'Previous version';
+        prevBtn.setAttribute('aria-label', 'Previous version');
+        var label = document.createElement('span');
+        label.className = 'branch-label';
+        var active = (chat._forkActive && chat._forkActive[String(msgIndex)] != null) ? Number(chat._forkActive[String(msgIndex)]) : branchCount;
+        if (isNaN(active) || active < 0) active = branchCount;
+        if (active > branchCount) active = branchCount;
+        label.textContent = (active + 1) + '/' + (branchCount + 1);
+        var nextBtn = document.createElement('button');
+        nextBtn.type = 'button';
+        nextBtn.className = 'msg-action branch-btn';
+        nextBtn.innerHTML = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="5 3 9 7 5 11"/></svg>';
+        nextBtn.title = 'Next version';
+        nextBtn.setAttribute('aria-label', 'Next version');
+        prevBtn.addEventListener('click', function() { cycleMessageFork(msgIndex, -1); });
+        nextBtn.addEventListener('click', function() { cycleMessageFork(msgIndex, 1); });
+        branchNav.appendChild(prevBtn);
+        branchNav.appendChild(label);
+        branchNav.appendChild(nextBtn);
+        return branchNav;
+      }
+
       function applyMessageEdit() {
         if (!editingState) return;
         if (activeChatId in streamControllers) return;
@@ -5556,12 +5880,8 @@
         if (!chat || chat.id !== editingState.chatId) { cancelMessageEdit(); return; }
         var msgIndex = editingState.msgIndex;
         if (!chat.messages[msgIndex] || chat.messages[msgIndex].role !== 'user') { cancelMessageEdit(); return; }
-        var msg = chat.messages[msgIndex];
         var payload = buildUserMessagePayload(text, pendingFiles, true);
-        msg.content = payload.displayContent;
-        msg._apiContent = payload.userContent;
-        chat.messages = chat.messages.slice(0, msgIndex + 1);
-        chat.metrics = null;
+        commitEditedUserMessage(chat, msgIndex, payload.displayContent, payload.userContent);
         if (!chat.incognito) persistChats(chat);
         editingState = null;
         renderEditBanner();
@@ -5570,6 +5890,7 @@
         autoResize();
         updateSendBtn();
         renderMessages();
+        renderChatList();
         placeComposer();
         sendMessage({ skipUserPush: true });
       }
@@ -5614,15 +5935,16 @@
           var next = textarea.value.trim();
           if (!next) return;
           if (role === 'user') {
-            chat.messages = chat.messages.slice(0, msgIndex);
-            chat.metrics = null;
-            if (!chat.incognito) persistChats();
-            composerInput.value = next;
+            commitEditedUserMessage(chat, msgIndex, next, next);
+            if (!chat.incognito) persistChats(chat);
+            composerInput.value = '';
+            clearPendingFiles();
             autoResize();
             updateSendBtn();
             renderMessages();
+            renderChatList();
             placeComposer();
-            sendMessage();
+            sendMessage({ skipUserPush: true });
           } else {
             msg.content = next;
             if (!chat.incognito) persistChats(chat);
@@ -7199,7 +7521,9 @@
           displayContent = payload.displayContent;
           chat.messages.push({ role: 'user', content: displayContent, _apiContent: userContent });
           updateChatTitle(chat, text);
-          if (!chat.incognito) persistChats();
+          // Write the user turn before streaming starts. A refresh mid-reply
+          // used to lose it, because this call passed no chat into IndexedDB.
+          if (!chat.incognito) persistChats(chat);
         }
 
         composerInput.value = '';
@@ -7840,9 +8164,17 @@
 
       function updateSendBtn() {
         var isStreamingActive = activeChatId in streamControllers;
+        // Stop has to stay clickable for the whole stream. Typing in the
+        // composer used to disable it, because an empty draft and an active
+        // stream took the same path.
+        if (isStreamingActive || sendBtn.classList.contains('stop-mode')) {
+          sendBtn.disabled = false;
+          sendBtn.classList.remove('ready');
+          return;
+        }
         var has = !!composerInput.value.trim();
-        sendBtn.disabled = isStreamingActive || !has;
-        sendBtn.classList.toggle('ready', has && !isStreamingActive);
+        sendBtn.disabled = !has;
+        sendBtn.classList.toggle('ready', has);
       }
 
       function setSendStop(stop) {
@@ -8651,8 +8983,8 @@
       });
 
       sendBtn.addEventListener('click', function() {
-        if (editingState) applyMessageEdit();
-        else if (activeChatId in streamControllers) stopGeneration();
+        if (activeChatId in streamControllers) stopGeneration();
+        else if (editingState) applyMessageEdit();
         else sendMessage();
       });
       $('editCancelBtn').addEventListener('click', cancelMessageEdit);
@@ -8691,8 +9023,9 @@
         }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          if (editingState) applyMessageEdit();
-          else if (!(activeChatId in streamControllers)) sendMessage();
+          if (activeChatId in streamControllers) stopGeneration();
+          else if (editingState) applyMessageEdit();
+          else sendMessage();
         }
       });
 

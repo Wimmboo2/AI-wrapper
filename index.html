@@ -7914,11 +7914,12 @@
           try {
           while (true) {
             var readResult = await readWithStop();
-            if (readResult.done) break;
-
-            buffer += decoder.decode(readResult.value, { stream: true });
+            if (readResult.done) buffer += decoder.decode();
+            else buffer += decoder.decode(readResult.value, { stream: true });
             var lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+            // A chunk that does not end in a newline stays buffered until the
+            // next chunk. When the stream ends, that remainder is a real line.
+            buffer = readResult.done ? '' : (lines.pop() || '');
 
             for (var li = 0; li < lines.length; li++) {
               var trimmed = lines[li].trim();
@@ -8025,6 +8026,7 @@
                 throw new Error(typeof rawErr === 'string' ? rawErr : 'The provider returned an error.');
               }
             }
+            if (readResult.done) break;
           }
 
           } catch (turnErr) {

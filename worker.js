@@ -17,34 +17,62 @@ const PROVIDER_URLS = {
 
 // Tavily search cache. The Worker is stateless across restarts, so this is a
 // best-effort in-memory cache: repeated queries in the same isolate reuse the
-// results instead of charging the user's Tavily account again. No KV, no disk,
-// no secrets. Queries are hashed so raw prompts are not kept as Map keys.
+// results instead of charging the same Tavily account again. No KV, no disk.
+// Each entry is scoped to a hash of that caller's Tavily key, and the key
+// includes the query text, so two prompts cannot collide and one account
+// cannot read another's results. The raw key is never stored. The map is
+// capped and evicted least-recently-used.
 const SEARCH_CACHE_TTL_MS = 15 * 60 * 1000;
 const SEARCH_CACHE_MAX = 50;
 const searchCache = new Map();
 
-function searchCacheKey(depth, topic, timeRange, query) {
-  let h = 5381;
-  for (let i = 0; i < query.length; i++) h = ((h * 33) ^ query.charCodeAt(i)) >>> 0;
-  return depth + '|' + topic + '|' + (timeRange || '') + '|' + h.toString(36);
+async function hashSearchScope(apiKey) {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(apiKey || '')));
+    let hex = '';
+    const bytes = new Uint8Array(digest);
+    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+    return hex;
+  } catch (_) {
+    return '';
+  }
+}
+
+async function searchCacheKey(apiKey, depth, topic, timeRange, query) {
+  const scope = await hashSearchScope(apiKey);
+  if (!scope) return '';
+  return scope + '\n' + depth + '\n' + topic + '\n' + (timeRange || '') + '\n' + query;
 }
 
 function searchCacheGet(key) {
+  if (!key) return null;
   const hit = searchCache.get(key);
   if (!hit) return null;
   if (Date.now() - hit.at > SEARCH_CACHE_TTL_MS) {
     searchCache.delete(key);
     return null;
   }
+  // Refresh recency so a hot query is not the first one evicted.
+  searchCache.delete(key);
+  searchCache.set(key, hit);
   return hit.value;
 }
 
 function searchCacheSet(key, value) {
+  if (!key) return;
+  if (searchCache.has(key)) searchCache.delete(key);
+  const now = Date.now();
   if (searchCache.size >= SEARCH_CACHE_MAX) {
-    const oldest = searchCache.keys().next().value;
-    if (oldest !== undefined) searchCache.delete(oldest);
+    for (const [k, hit] of searchCache) {
+      if (now - hit.at > SEARCH_CACHE_TTL_MS) searchCache.delete(k);
+    }
   }
-  searchCache.set(key, { at: Date.now(), value });
+  while (searchCache.size >= SEARCH_CACHE_MAX) {
+    const oldest = searchCache.keys().next().value;
+    if (oldest === undefined) break;
+    searchCache.delete(oldest);
+  }
+  searchCache.set(key, { at: now, value });
 }
 
 // Never '*'. Echo one concrete origin, or omit the header.
@@ -1802,7 +1830,7 @@ export default {
         if (!plan) {
           searchEvent = { search: { error: 'No query provided for search.', code: 'no_query' } };
         } else {
-          const cacheKey = searchCacheKey(plan.depth, plan.topic, plan.timeRange, plan.query);
+          const cacheKey = await searchCacheKey(tavilyKey, plan.depth, plan.topic, plan.timeRange, plan.query);
           let curated = searchCacheGet(cacheKey);
           const cached = !!curated;
           if (!curated) {

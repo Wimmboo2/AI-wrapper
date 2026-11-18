@@ -4013,6 +4013,7 @@
 
       var DEFAULT_TEMPLATES = [
         { key: 'code', label: 'Code mode', color: 'purple', prompt: '', enableCodeMode: true },
+        { key: 'search', label: 'Search the web', color: 'blue', prompt: '', hint: 'Runs the rest of the line', enableWebSearch: true },
         { key: 'web', label: 'Web search', color: 'blue', prompt: '', enableWebSearch: true },
         { key: 'explain', label: 'Simple Explainer', color: 'amber', prompt: '', prefix: 'Explain this topic simply and clearly, step by step: ' },
         { key: 'summarize', label: 'Summarize Text', color: 'emerald', prompt: '', prefix: 'Summarize the key takeaways and main points of the following text: ' },
@@ -4147,6 +4148,19 @@
           // older build. A URL the user actually typed is left alone.
           if (k === 'apiEndpoint' && !String(merged[k] || '').trim()) {
             merged[k] = DEFAULT_SETTINGS.apiEndpoint;
+          }
+          if (k === 'promptTemplates' && Array.isArray(merged[k]) && !merged[k].some(function(t) { return t && t.key === 'search'; })) {
+            var searchTpl = null;
+            for (var si = 0; si < DEFAULT_TEMPLATES.length; si++) {
+              if (DEFAULT_TEMPLATES[si].key === 'search') searchTpl = DEFAULT_TEMPLATES[si];
+            }
+            if (searchTpl) {
+              var at = 0;
+              for (var ti = 0; ti < merged[k].length; ti++) {
+                if (merged[k][ti] && merged[k][ti].key === 'web') { at = ti; break; }
+              }
+              merged[k].splice(at, 0, searchTpl);
+            }
           }
         }
         // Cerebras and Groq were replaced by DeepInfra and GMI Cloud. A saved
@@ -7339,6 +7353,17 @@
         opts = opts || {};
         var text = composerInput.value.trim();
         if (activeChatId in streamControllers) return;
+        var slashSearch = searchCommandQuery(text);
+        if (slashSearch != null) {
+          if (!slashSearch && !pendingFiles.length && !opts.skipUserPush) {
+            showToast('Type a query after /search');
+            return;
+          }
+          if (slashSearch) {
+            text = slashSearch;
+            opts.searchMode = 'on';
+          }
+        }
         if (!opts.skipUserPush && !text && !pendingFiles.length) return;
 
         if (!settings.apiEndpoint) { showToast('Set your API endpoint in Settings first'); return; }
@@ -8813,7 +8838,7 @@
               '<span class="slash-item-key">/' + escapeHtml(item.key) + '</span>' +
               '<span class="slash-item-label">' + escapeHtml(item.label) + '</span>' +
               '</div>' +
-              '<span class="slash-item-prompt">' + (item.prompt ? escapeHtml(item.prompt) : 'Activate mode') + '</span>';
+              '<span class="slash-item-prompt">' + escapeHtml(item.hint || (item.prompt ? item.prompt : 'Activate mode')) + '</span>';
             el.addEventListener('click', function(e) {
               e.stopPropagation();
               applySlashTemplate(item);
@@ -8871,7 +8896,28 @@
         }
       }
 
+      function searchCommandQuery(text) {
+        var m = String(text || '').match(/^\/search\b\s*([\s\S]*)$/i);
+        if (!m) return null;
+        return m[1].replace(/\s+/g, ' ').trim();
+      }
+
       function applySlashTemplate(item) {
+        if (item.key === 'search') {
+          var q = searchCommandQuery(composerInput.value);
+          var searchMenu = $('slashMenu');
+          if (searchMenu) searchMenu.classList.remove('visible');
+          if (q) {
+            composerInput.value = q;
+            webSearch = true;
+            activeTemplate = null;
+            renderComposerActiveTags();
+            autoResize();
+            updateSendBtn();
+            sendMessage({ searchMode: 'on' });
+            return;
+          }
+        }
         composerInput.value = item.prompt || '';
         if (item.enableCodeMode) {
           codeMode = true;

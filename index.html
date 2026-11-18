@@ -3510,7 +3510,7 @@
         <div class="setting-group">
           <label class="setting-label" for="settingEndpoint">API Endpoint</label>
           <p class="setting-desc">URL of your Cloudflare Worker or compatible proxy.</p>
-          <input type="url" class="setting-input setting-input-mono" id="settingEndpoint" placeholder="https://omni-proxy.workers.dev" autocomplete="off" />
+          <input type="url" class="setting-input setting-input-mono" id="settingEndpoint" placeholder="https://omni-api.wimmboo.workers.dev" autocomplete="off" />
           <div class="model-info" id="providerURLInfo"></div>
         </div>
 
@@ -4016,7 +4016,7 @@
       ];
 
       var DEFAULT_SETTINGS = {
-        apiEndpoint: '',
+        apiEndpoint: 'https://omni-api.wimmboo.workers.dev',
         provider: 'openai',
         apiKey: '',
         apiKeys: {},
@@ -4138,6 +4138,11 @@
         for (var i = 0; i < keys.length; i++) {
           var k = keys[i];
           merged[k] = (raw && raw[k] != null) ? raw[k] : DEFAULT_SETTINGS[k];
+          // A blank endpoint is "not set", including one already saved by an
+          // older build. A URL the user actually typed is left alone.
+          if (k === 'apiEndpoint' && !String(merged[k] || '').trim()) {
+            merged[k] = DEFAULT_SETTINGS.apiEndpoint;
+          }
         }
         // Cerebras and Groq were replaced by DeepInfra and GMI Cloud. A saved
         // selection must not leave the app pointed at a provider key that no

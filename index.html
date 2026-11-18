@@ -7842,10 +7842,7 @@
               var event;
               try { event = JSON.parse(payload); }
               catch (_) {
-                if (payload) {
-                  markToken(turn, true);
-                  applyVisibleDelta(payload);
-                }
+                console.error('Skipped unparseable stream line:', String(payload).slice(0, 120));
                 continue;
               }
 

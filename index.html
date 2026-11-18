@@ -3510,7 +3510,7 @@
         <div class="setting-group">
           <label class="setting-label" for="settingEndpoint">API Endpoint</label>
           <p class="setting-desc">URL of your Cloudflare Worker or compatible proxy.</p>
-          <input type="url" class="setting-input setting-input-mono" id="settingEndpoint" placeholder="https://omni-proxy.workers.dev" autocomplete="off" />
+          <input type="url" class="setting-input setting-input-mono" id="settingEndpoint" placeholder="https://omni-api.wimmboo.workers.dev" autocomplete="off" />
           <div class="model-info" id="providerURLInfo"></div>
         </div>
 
@@ -4016,7 +4016,7 @@
       ];
 
       var DEFAULT_SETTINGS = {
-        apiEndpoint: '',
+        apiEndpoint: 'https://omni-api.wimmboo.workers.dev',
         provider: 'openai',
         apiKey: '',
         apiKeys: {},
@@ -4138,6 +4138,11 @@
         for (var i = 0; i < keys.length; i++) {
           var k = keys[i];
           merged[k] = (raw && raw[k] != null) ? raw[k] : DEFAULT_SETTINGS[k];
+          // A blank endpoint is "not set", including one already saved by an
+          // older build. A URL the user actually typed is left alone.
+          if (k === 'apiEndpoint' && !String(merged[k] || '').trim()) {
+            merged[k] = DEFAULT_SETTINGS.apiEndpoint;
+          }
         }
         // Cerebras and Groq were replaced by DeepInfra and GMI Cloud. A saved
         // selection must not leave the app pointed at a provider key that no
@@ -5810,13 +5815,6 @@
         return el;
       }
 
-      function truncateSourceTitle(title, maxLen) {
-        var t = String(title || '').trim();
-        if (!t) return 'Source';
-        if (t.length <= maxLen) return t;
-        return t.slice(0, maxLen - 1) + '\u2026';
-      }
-
       function makeCitationChip(index, sources, msgIndex) {
         var src = sources[index - 1] || {};
         var title = src.title || src.url || 'Source';
@@ -5831,7 +5829,9 @@
         chip.appendChild(num);
         var name = document.createElement('span');
         name.className = 'citation-chip-name';
-        name.textContent = truncateSourceTitle(title, 26);
+        name.textContent = title;
+        name.title = title;
+        chip.title = title;
         chip.appendChild(name);
         chip.insertAdjacentHTML('beforeend', ICONS.externalLink);
         chip.addEventListener('click', function(e) {
@@ -5873,6 +5873,9 @@
             if (match.index > last) frag.appendChild(document.createTextNode(text.slice(last, match.index)));
             frag.appendChild(makeCitationChip(n, sources, msgIndex));
             last = match.index + match[0].length;
+            // The chip already has its own margin. The space the model left
+            // after [n] would sit on top of that and read as a stray gap.
+            if (text.charAt(last) === ' ' || text.charAt(last) === '\u00A0') last += 1;
             changed = true;
           }
           if (!changed) continue;
@@ -5886,7 +5889,13 @@
           if (!m) continue;
           var idx = parseInt(m[1], 10);
           if (!(idx >= 1 && idx <= sources.length)) continue;
-          a.replaceWith(makeCitationChip(idx, sources, msgIndex));
+          var chip = makeCitationChip(idx, sources, msgIndex);
+          a.replaceWith(chip);
+          var afterChip = chip.nextSibling;
+          if (afterChip && afterChip.nodeType === 3 && (afterChip.nodeValue.charAt(0) === ' ' || afterChip.nodeValue.charAt(0) === '\u00A0')) {
+            afterChip.nodeValue = afterChip.nodeValue.slice(1);
+            if (!afterChip.nodeValue) afterChip.parentNode.removeChild(afterChip);
+          }
         }
       }
 
@@ -6262,7 +6271,7 @@
       };
 
       function chatTokenTotals(chat) {
-        var out = { input: 0, output: 0, cached: 0, replies: 0, estimated: false };
+        var out = { input: 0, output: 0, cached: 0, replies: 0, estimated: false, inputEstimated: false, outputEstimated: false };
         if (!chat) return out;
         chat.messages.forEach(function(msg) {
           if (msg.role !== 'assistant') return;
@@ -6273,9 +6282,13 @@
           out.input += Number(inTok) || 0;
           out.output += Number(outTok) || 0;
           if (mm && mm.cached_tokens) out.cached += Number(mm.cached_tokens) || 0;
-          if (!mm || mm.tokens_estimated) out.estimated = true;
+          // Older replies only stored one flag. A missing record is an estimate.
+          var legacy = !!(mm && mm.tokens_estimated && mm.input_estimated == null && mm.output_estimated == null);
+          if (!mm || mm.input_estimated || legacy) out.inputEstimated = true;
+          if (!mm || mm.output_estimated || legacy) out.outputEstimated = true;
           out.replies++;
         });
+        out.estimated = out.inputEstimated || out.outputEstimated;
         return out;
       }
 
@@ -6304,35 +6317,43 @@
           return;
         }
 
-        var est = !!m.tokens_estimated;
-        var tilde = est ? '~' : '';
+        // Older replies have one flag for both sides. New ones say which side
+        // was estimated, so a real output count is not badged as a guess.
+        var legacyEst = !!(m.tokens_estimated && m.input_estimated == null && m.output_estimated == null);
+        var estIn = !!(m.input_estimated || legacyEst);
+        var estOut = !!(m.output_estimated || legacyEst);
+        var ctxEst = m.context_estimated != null ? !!m.context_estimated : (estIn || estOut);
         var phases = metricPhases(m);
         var fromServer = m.rate_source === 'server';
+        var promptFromServer = m.prompt_rate_source === 'server' || (m.prompt_rate_source == null && fromServer);
         var rateNote = fromServer ? 'from ' + (m.rate_engine || 'the server') : 'measured in-browser';
+        var promptRateNote = promptFromServer ? 'from ' + (m.rate_engine || 'the server') : 'upper bound';
 
         // --- speed ---------------------------------------------------------
         var genTs = m.generation_tokens_per_second;
         var genTier = genTs != null ? pickTier(SPEED_TIERS, Number(genTs)) : null;
         if (genTs != null) {
           var genSub = [genTier.word];
-          genSub.push(fromServer ? rateNote : (phases ? 'over ' + formatMs(phases.think + phases.gen) : rateNote));
+          if (m.gen_window_ms != null) genSub.push('over ' + formatMs(m.gen_window_ms));
+          else genSub.push(fromServer ? rateNote : (phases ? 'over ' + formatMs(phases.think + phases.gen) : rateNote));
           grid.appendChild(metricCell({
             label: 'Gen t/s',
-            value: (fromServer ? '' : tilde) + formatRate(genTs) + ' t/s',
+            value: (estOut ? '~' : '') + formatRate(genTs) + ' t/s',
             tone: genTier.tone,
-            estimated: est && !fromServer,
+            estimated: estOut,
             sub: genSub.join(' \u00b7 '),
-            title: 'Output tokens divided by the time actually spent generating. Prefill, reasoning-before-first-token and tool execution are all outside this window.',
+            title: 'Output tokens divided by the generation window shown under the number. Prefill, reasoning-before-first-token and tool execution are all outside this window.'
+              + (fromServer ? ' The window is the server timing.' : ''),
           }));
         }
         var promptTs = m.prompt_tokens_per_second;
         if (promptTs != null) {
           grid.appendChild(metricCell({
             label: 'Prefill t/s',
-            value: (fromServer ? '' : tilde) + formatRate(promptTs) + ' t/s',
-            estimated: est && !fromServer,
-            sub: fromServer ? rateNote : 'upper bound',
-            title: fromServer
+            value: (estIn ? '~' : '') + formatRate(promptTs) + ' t/s',
+            estimated: estIn,
+            sub: promptRateNote,
+            title: promptFromServer
               ? 'Prompt tokens divided by the prompt-eval time the server reported.'
               : 'Prompt tokens divided by time-to-first-token. An upper bound only: queueing and network latency sit inside that window.',
           }));
@@ -6377,22 +6398,22 @@
           if (m.turns > 1) inSub.push('over ' + m.turns + ' turns');
           grid.appendChild(metricCell({
             label: 'Input',
-            value: tilde + fmtInt(inputTok),
-            estimated: est,
+            value: (estIn ? '~' : '') + fmtInt(inputTok),
+            estimated: estIn,
             sub: inSub.join(' \u00b7 '),
             title: 'Prompt tokens billed for this reply, summed across every turn it took.',
           }));
         }
         if (outputTok != null) {
           var outSub = [];
-          if (m.reasoning_tokens) {
+          if (m.reasoning_tokens && m.reasoning_tokens <= outputTok) {
             outSub.push(fmtInt(m.reasoning_tokens) + ' reasoning');
-            outSub.push(fmtInt(Math.max(0, outputTok - m.reasoning_tokens)) + ' visible');
+            outSub.push(fmtInt(outputTok - m.reasoning_tokens) + ' visible');
           }
           grid.appendChild(metricCell({
             label: 'Output',
-            value: tilde + fmtInt(outputTok),
-            estimated: est,
+            value: (estOut ? '~' : '') + fmtInt(outputTok),
+            estimated: estOut,
             sub: outSub.join(' \u00b7 '),
             title: 'Completion tokens billed for this reply, reasoning included.',
           }));
@@ -6406,9 +6427,9 @@
           var ctxTier = pickTier(CONTEXT_TIERS, ctxPct);
           grid.appendChild(metricCell({
             label: 'Context usage',
-            value: tilde + fmtInt(ctxUsed) + ' / ' + fmtInt(ctxMax) + ' (' + ctxPct.toFixed(1) + '%)',
+            value: (ctxEst ? '~' : '') + fmtInt(ctxUsed) + ' / ' + fmtInt(ctxMax) + ' (' + ctxPct.toFixed(1) + '%)',
             tone: ctxTier.tone,
-            estimated: est,
+            estimated: ctxEst,
             wide: true,
             extra: contextBarEl(ctxPct, ctxTier.bar),
             sub: ctxTier.word + ' \u00b7 ' + fmtInt(Math.max(0, ctxMax - ctxUsed)) + ' left',
@@ -6423,8 +6444,8 @@
           if (totals.cached) totalSub += ' \u00b7 ' + fmtInt(totals.cached) + ' cached';
           grid.appendChild(metricCell({
             label: 'Billed this chat',
-            value: (totals.estimated ? '~' : '') + fmtInt(totals.input) + ' in / ' + fmtInt(totals.output) + ' out',
-            estimated: totals.estimated,
+            value: (totals.inputEstimated ? '~' : '') + fmtInt(totals.input) + ' in / ' + (totals.outputEstimated ? '~' : '') + fmtInt(totals.output) + ' out',
+            estimated: !!(totals.inputEstimated && totals.outputEstimated),
             wide: true,
             sub: totalSub,
             title: 'Every turn re-sends the whole conversation, so this grows faster than the conversation does. It is a billing figure, not a measure of chat length.',
@@ -6438,7 +6459,10 @@
           var stopNote = STOP_REASON_TEXT[m.stop_reason];
           if (stopNote) notes.push({ text: stopNote, warn: m.stop_reason !== 'stop_sequence' });
           if (m.rate_unmeasurable) notes.push({ text: 'arrived too fast to time a generation rate', warn: false });
-          notes.push({ text: est ? 'counts estimated from text length' : 'counts reported by the provider', warn: false });
+          if (estIn && estOut) notes.push({ text: 'counts estimated from text length', warn: false });
+          else if (estIn) notes.push({ text: 'input estimated from text length', warn: false });
+          else if (estOut) notes.push({ text: 'output estimated from text length', warn: false });
+          else notes.push({ text: 'counts reported by the provider', warn: false });
           if (m.rate_engine) notes.push({ text: 'timings from ' + m.rate_engine, warn: false });
           foot.style.display = '';
           notes.forEach(function(n) {
@@ -6452,8 +6476,8 @@
         // --- collapsed summary ---------------------------------------------
         if (summaryEl) {
           var summary = [];
-          if (genTs != null) summary.push((fromServer ? '' : tilde) + formatRate(genTs) + ' t/s');
-          if (outputTok != null) summary.push(tilde + fmtInt(outputTok) + ' tok');
+          if (genTs != null) summary.push((estOut ? '~' : '') + formatRate(genTs) + ' t/s');
+          if (outputTok != null) summary.push((estOut ? '~' : '') + fmtInt(outputTok) + ' tok');
           if (m.ttft_ms != null) summary.push(formatMs(m.ttft_ms) + ' ttft');
           if (m.total_duration_ms != null) summary.push(formatMs(m.total_duration_ms));
           summaryEl.innerHTML = '';
@@ -7442,8 +7466,26 @@
           context_used: null,
           context_window: getContextWindow(),
           tokens_estimated: false,
+          input_estimated: false,
+          output_estimated: false,
+          context_estimated: false,
+          gen_window_ms: null,
+          prompt_window_ms: null,
+          prompt_rate_source: null,
           partial: false,
         };
+
+        // Usage events for one turn are cumulative. A later 0, or a smaller
+        // partial, must not wipe a count that was already known.
+        function keepCount(prev, next) {
+          if (next == null || next === '') return prev;
+          var n = Number(next);
+          if (!Number.isFinite(n) || n < 0) return prev;
+          if (prev == null || prev === '') return n;
+          var p = Number(prev);
+          if (!Number.isFinite(p)) return n;
+          return n > p ? n : p;
+        }
 
         function newTurn() {
           var t = {
@@ -7510,11 +7552,19 @@
           var inSum = 0, outSum = 0, cachedSum = 0, writeSum = 0, reasonSum = 0;
           var sawIn = false, sawOut = false;
           var prefillMs = 0, genMs = 0, deltaCount = 0;
-          var srvPromptMs = 0, srvGenMs = 0, srvPromptTok = 0, srvGenTok = 0;
+          var srvPromptMs = 0, srvGenMs = 0;
           var srvEngine = null;
           var srvEveryTurn = turnRecords.length > 0;
 
           turnRecords.forEach(function(t) {
+            // Server timings can carry a token count when the provider never
+            // sent usage. They must not replace a usage count: the two sources
+            // disagree, and swapping one side made context, billed, and t/s
+            // describe three different replies.
+            if (t.server) {
+              if (t.prompt_tokens == null && Number(t.server.prompt_tokens) > 0) t.prompt_tokens = Number(t.server.prompt_tokens);
+              if (t.completion_tokens == null && Number(t.server.completion_tokens) > 0) t.completion_tokens = Number(t.server.completion_tokens);
+            }
             if (t.prompt_tokens != null) { inSum += Number(t.prompt_tokens) || 0; sawIn = true; }
             if (t.completion_tokens != null) { outSum += Number(t.completion_tokens) || 0; sawOut = true; }
             cachedSum += Number(t.cached_tokens) || 0;
@@ -7535,8 +7585,6 @@
               srvEngine = t.server.source;
               srvPromptMs += Number(t.server.prompt_ms) || 0;
               srvGenMs += Number(t.server.gen_ms) || 0;
-              srvPromptTok += Number(t.server.prompt_tokens) || 0;
-              srvGenTok += Number(t.server.completion_tokens) || 0;
             } else {
               srvEveryTurn = false;
             }
@@ -7547,18 +7595,15 @@
           m.cache_write_tokens = writeSum || null;
           m.reasoning_tokens = reasonSum || null;
 
-          // A server counting its own tokens beats anything measured out here.
-          if (srvEveryTurn && srvGenTok > 0) { outSum = srvGenTok; sawOut = true; }
-          if (srvEveryTurn && srvPromptTok > 0) { inSum = srvPromptTok; sawIn = true; }
-
-          var estimated = false;
+          var inputEstimated = false;
+          var outputEstimated = false;
           if (!sawOut) {
             var producedChars = (assistantMsg.content || '').length + (assistantMsg.thinking || '').length;
             if (assistantMsg._steps) {
               assistantMsg._steps.forEach(function(s) { producedChars += (s.text || '').length; });
             }
             outSum = producedChars ? Math.max(1, Math.round(producedChars / 3.5)) : null;
-            estimated = true;
+            outputEstimated = outSum != null;
           }
           if (!sawIn) {
             if (promptHasImages(requestBody.messages)) {
@@ -7568,42 +7613,73 @@
               // multimodal one, so this cannot assume a string.
               var promptChars = requestBody.messages.reduce(function(sum, msg) { return sum + approxContentLength(msg.content); }, 0);
               inSum = Math.max(1, Math.round(promptChars / 3.5));
+              inputEstimated = true;
             }
-            estimated = true;
           }
-          m.tokens_estimated = estimated;
+          m.input_estimated = inputEstimated;
+          m.output_estimated = outputEstimated;
+          m.tokens_estimated = inputEstimated || outputEstimated;
           m.input_tokens = inSum;
           m.output_tokens = outSum;
 
-          // Billed is the sum over every turn; context is only ever what the next
-          // request will carry, which is the last turn alone. Conflating the two
-          // is what made agent runs report nonsense.
-          var last = turnRecords[turnRecords.length - 1];
-          if (last && last.prompt_tokens != null) {
-            m.context_used = Number(last.prompt_tokens) + (Number(last.completion_tokens) || 0);
+          // One turn: context is the same input + output the cells show, so the
+          // bar cannot disagree with them. Several turns: context is the last
+          // turn alone, because that is what the next request carries. It is
+          // not the billed sum.
+          if (turnRecords.length <= 1) {
+            if (inSum == null && outSum == null) {
+              m.context_used = null;
+              m.context_estimated = false;
+            } else {
+              m.context_used = (Number(inSum) || 0) + (Number(outSum) || 0);
+              m.context_estimated = inputEstimated || outputEstimated;
+            }
           } else {
-            m.context_used = (inSum || 0) + (outSum || 0);
+            var last = turnRecords[turnRecords.length - 1];
+            if (last && (last.prompt_tokens != null || last.completion_tokens != null)) {
+              m.context_used = (Number(last.prompt_tokens) || 0) + (Number(last.completion_tokens) || 0);
+              m.context_estimated = false;
+            } else {
+              m.context_used = null;
+              m.context_estimated = false;
+            }
           }
 
-          if (srvEveryTurn && srvGenMs > 0 && srvGenTok > 0) {
-            m.generation_tokens_per_second = (srvGenTok / srvGenMs) * 1000;
+          // The rate numerator is the output count on screen. The denominator
+          // is stored as gen_window_ms and printed under the number, so the
+          // t/s cell cannot cite a different window than the one it divided by.
+          m.generation_tokens_per_second = null;
+          m.prompt_tokens_per_second = null;
+          m.rate_source = null;
+          m.prompt_rate_source = null;
+          m.rate_engine = null;
+          m.gen_window_ms = null;
+          m.prompt_window_ms = null;
+          m.rate_unmeasurable = false;
+          if (srvEveryTurn && srvGenMs > 0 && outSum > 0) {
+            m.generation_tokens_per_second = (outSum / srvGenMs) * 1000;
             m.rate_source = 'server';
             m.rate_engine = srvEngine;
+            m.gen_window_ms = srvGenMs;
           } else if (outSum > 0 && deltaCount >= 2 && genMs >= MIN_RATE_WINDOW_MS) {
             m.generation_tokens_per_second = (outSum / genMs) * 1000;
             m.rate_source = 'client';
+            m.gen_window_ms = genMs;
           } else if (outSum > 0) {
             // A reply that arrived in one chunk, or faster than the clock can
             // resolve, has no generation window. Reporting tokens over ~2ms
             // produces six-figure rates that are pure noise.
             m.rate_unmeasurable = true;
           }
-          if (srvEveryTurn && srvPromptMs > 0 && srvPromptTok > 0) {
-            m.prompt_tokens_per_second = (srvPromptTok / srvPromptMs) * 1000;
-            m.rate_source = 'server';
-            m.rate_engine = srvEngine;
+          if (srvEveryTurn && srvPromptMs > 0 && inSum > 0) {
+            m.prompt_tokens_per_second = (inSum / srvPromptMs) * 1000;
+            m.prompt_rate_source = 'server';
+            m.rate_engine = m.rate_engine || srvEngine;
+            m.prompt_window_ms = srvPromptMs;
           } else if (inSum > 0 && prefillMs >= MIN_PREFILL_WINDOW_MS) {
             m.prompt_tokens_per_second = (inSum / prefillMs) * 1000;
+            m.prompt_rate_source = 'client';
+            m.prompt_window_ms = prefillMs;
           }
           return m;
         }
@@ -7766,10 +7842,7 @@
               var event;
               try { event = JSON.parse(payload); }
               catch (_) {
-                if (payload) {
-                  markToken(turn, true);
-                  applyVisibleDelta(payload);
-                }
+                console.error('Skipped unparseable stream line:', String(payload).slice(0, 120));
                 continue;
               }
 
@@ -7806,20 +7879,40 @@
                 pendingTools[event.tool_args.i].argsText += event.tool_args.d || '';
               }
 
-              // Usage lands on this turn, never on a shared total: providers send
-              // it more than once per turn and the counts are cumulative-final,
-              // so last-write-wins is right per turn and wrong across turns.
+              // Usage lands on this turn, never on a shared total. Counts are
+              // cumulative, so a later event may only raise a field. A 0 or a
+              // smaller partial must not erase a count already seen.
               if (event.usage) {
                 var u = event.usage;
-                if (u.prompt_tokens != null) turn.prompt_tokens = u.prompt_tokens;
-                else if (u.input_tokens != null) turn.prompt_tokens = u.input_tokens;
-                if (u.completion_tokens != null) turn.completion_tokens = u.completion_tokens;
-                else if (u.output_tokens != null) turn.completion_tokens = u.output_tokens;
-                if (u.cached_tokens != null) turn.cached_tokens = u.cached_tokens;
-                if (u.cache_write_tokens != null) turn.cache_write_tokens = u.cache_write_tokens;
-                if (u.reasoning_tokens != null) turn.reasoning_tokens = u.reasoning_tokens;
+                var prompt = u.prompt_tokens != null ? u.prompt_tokens : u.input_tokens;
+                var completion = u.completion_tokens != null ? u.completion_tokens : u.output_tokens;
+                turn.prompt_tokens = keepCount(turn.prompt_tokens, prompt);
+                turn.completion_tokens = keepCount(turn.completion_tokens, completion);
+                turn.cached_tokens = keepCount(turn.cached_tokens, u.cached_tokens);
+                turn.cache_write_tokens = keepCount(turn.cache_write_tokens, u.cache_write_tokens);
+                turn.reasoning_tokens = keepCount(turn.reasoning_tokens, u.reasoning_tokens);
               }
-              if (event.server_timing) turn.server = event.server_timing;
+              if (event.server_timing) {
+                var incoming = event.server_timing;
+                if (!turn.server) {
+                  turn.server = {
+                    source: incoming.source || null,
+                    prompt_tokens: incoming.prompt_tokens,
+                    completion_tokens: incoming.completion_tokens,
+                    prompt_ms: incoming.prompt_ms,
+                    gen_ms: incoming.gen_ms,
+                    queue_ms: incoming.queue_ms,
+                  };
+                } else {
+                  var srv = turn.server;
+                  if (incoming.source) srv.source = incoming.source;
+                  srv.prompt_tokens = keepCount(srv.prompt_tokens, incoming.prompt_tokens);
+                  srv.completion_tokens = keepCount(srv.completion_tokens, incoming.completion_tokens);
+                  srv.prompt_ms = keepCount(srv.prompt_ms, incoming.prompt_ms);
+                  srv.gen_ms = keepCount(srv.gen_ms, incoming.gen_ms);
+                  srv.queue_ms = keepCount(srv.queue_ms, incoming.queue_ms);
+                }
+              }
               if (event.stop_reason) localMetrics.stop_reason = event.stop_reason;
 
               if (event.search) {

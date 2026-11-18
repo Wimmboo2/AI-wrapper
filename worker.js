@@ -727,6 +727,51 @@ function publicProviderError(status, raw, fallback) {
   return fallback || 'The provider returned an error.';
 }
 
+// Tavily's published_date is not always YYYY-MM-DD. Slicing to 10 characters
+// turns "Wed, 19 Nov 2025 00:00:00 GMT" into "Wed, 19 No".
+function formatSourceDate(raw) {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const ms = raw > 1e12 ? raw : raw * 1000;
+    const dt = new Date(ms);
+    if (!Number.isNaN(dt.getTime())) {
+      const y = dt.getUTCFullYear();
+      if (y >= 1990 && y <= 2100) {
+        return y + '-' + String(dt.getUTCMonth() + 1).padStart(2, '0') + '-' + String(dt.getUTCDate()).padStart(2, '0');
+      }
+    }
+    return '';
+  }
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+  if (iso) {
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return iso[1] + '-' + iso[2] + '-' + iso[3];
+    }
+  }
+  const looksDated = /\d/.test(s) && (
+    /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s) ||
+    /^\d{1,2}[\/.]\d{1,2}[\/.]\d{2,4}/.test(s) ||
+    /,\s*\d{4}\b/.test(s)
+  );
+  if (looksDated) {
+    const parsed = Date.parse(s);
+    if (!Number.isNaN(parsed)) {
+      const dt = new Date(parsed);
+      const y = dt.getUTCFullYear();
+      if (y >= 1990 && y <= 2100) {
+        return y + '-' + String(dt.getUTCMonth() + 1).padStart(2, '0') + '-' + String(dt.getUTCDate()).padStart(2, '0');
+      }
+    }
+  }
+  if (s.length <= 48) return s;
+  const cut = s.slice(0, 48);
+  const sp = cut.lastIndexOf(' ');
+  return (sp >= 12 ? cut.slice(0, sp) : cut).trim();
+}
+
 async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer, collectCitations, redirectMode) {
   const response = await fetch(url, {
     method: 'POST',
@@ -968,7 +1013,7 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
             for (const r of results) {
               if (!r || r.type !== 'web_search_result' || !r.url || seenSearchUrls.has(r.url)) continue;
               seenSearchUrls.add(r.url);
-              searchSources.push({ title: (r.title || r.url).slice(0, 160), url: r.url, date: (r.page_age || '').slice(0, 10) });
+              searchSources.push({ title: (r.title || r.url).slice(0, 160), url: r.url, date: formatSourceDate(r.page_age) });
               if (searchSources.length >= 10) break;
             }
           }
@@ -1094,15 +1139,30 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
         }
 
         if (parsed.usageMetadata) {
-          await writer.write(encoder.encode(JSON.stringify({
-            usage: {
-              prompt_tokens: parsed.usageMetadata.promptTokenCount,
-              completion_tokens: parsed.usageMetadata.candidatesTokenCount,
-              total_tokens: parsed.usageMetadata.totalTokenCount,
-              cached_tokens: parsed.usageMetadata.cachedContentTokenCount,
-              reasoning_tokens: parsed.usageMetadata.thoughtsTokenCount,
+          const um = parsed.usageMetadata;
+          const prompt = typeof um.promptTokenCount === 'number' ? um.promptTokenCount : null;
+          const candidates = typeof um.candidatesTokenCount === 'number' ? um.candidatesTokenCount : null;
+          const thoughts = typeof um.thoughtsTokenCount === 'number' ? um.thoughtsTokenCount : null;
+          const total = typeof um.totalTokenCount === 'number' ? um.totalTokenCount : null;
+          // candidatesTokenCount omits thoughts on some models and includes
+          // them on others. total - prompt is the billed output when it lines
+          // up with one of those two shapes, and is otherwise left alone so a
+          // thought count is not added twice.
+          let completion = candidates;
+          if (prompt != null && total != null) {
+            const implied = total - prompt;
+            const withThoughts = (candidates || 0) + (thoughts || 0);
+            if (implied >= 0 && (candidates == null || implied === candidates || (thoughts != null && implied === withThoughts))) {
+              completion = implied;
             }
-          }) + '\n'));
+          }
+          const usage = {};
+          if (prompt != null) usage.prompt_tokens = prompt;
+          if (completion != null) usage.completion_tokens = completion;
+          if (total != null) usage.total_tokens = total;
+          if (typeof um.cachedContentTokenCount === 'number') usage.cached_tokens = um.cachedContentTokenCount;
+          if (thoughts != null) usage.reasoning_tokens = thoughts;
+          await writer.write(encoder.encode(JSON.stringify({ usage }) + '\n'));
         }
 
         const candidates = parsed.candidates;
@@ -1723,7 +1783,7 @@ export default {
             title: String(r.title || 'Untitled').slice(0, 160),
             url: r.url,
             domain: domain,
-            date: String(r.published_date || '').slice(0, 10),
+            date: formatSourceDate(r.published_date),
             snippet: String(r.content || '').slice(0, 240),
             content: String(r.content || '').slice(0, 1500),
             score: Number(r.score) || 0,

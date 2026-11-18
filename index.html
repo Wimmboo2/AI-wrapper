@@ -2849,6 +2849,11 @@
       font-size: 13px;
     }
 
+    .setting-input.secret-masked {
+      -webkit-text-security: disc;
+      text-security: disc;
+    }
+
     .password-wrap {
       position: relative;
     }
@@ -3522,7 +3527,7 @@
         <div class="setting-group">
           <label class="setting-label" for="settingProxyKey">Worker access key</label>
           <p class="setting-desc">Only if the Worker has OMNI_PROXY_KEY set. Leave empty when the Worker is locked with ALLOWED_ORIGINS instead. Sent to your Worker, not to the model provider.</p>
-          <input type="password" class="setting-input setting-input-mono" id="settingProxyKey" placeholder="Same value as OMNI_PROXY_KEY" autocomplete="off" />
+          <input type="text" class="setting-input setting-input-mono" id="settingProxyKey" placeholder="Same value as OMNI_PROXY_KEY" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" />
         </div>
 
         <div class="setting-group">
@@ -3555,7 +3560,7 @@
           <label class="setting-label" for="settingApiKey">API Key</label>
           <p class="setting-desc">Stored locally in your browser. Never sent anywhere except your endpoint.</p>
           <div class="password-wrap">
-            <input type="password" class="setting-input setting-input-mono" id="settingApiKey" placeholder="sk-..." autocomplete="off" />
+            <input type="text" class="setting-input setting-input-mono" id="settingApiKey" placeholder="sk-..." autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" />
             <button class="password-toggle" id="apiKeyToggle" type="button" aria-label="Toggle API key visibility">
               <svg id="apiKeyToggleIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
@@ -3602,7 +3607,7 @@
           <label class="setting-label" for="settingSandboxKey"><span id="sandboxKeyLabel">E2B</span> API Key</label>
           <p class="setting-desc">Enables agent mode, which lets the model run code in a sandboxed Linux VM. Your key, your account &mdash; stored in this browser and sent only to your own Worker, which keeps none of it.</p>
           <div class="password-wrap">
-            <input type="password" class="setting-input setting-input-mono" id="settingSandboxKey" placeholder="e2b_..." autocomplete="off" />
+            <input type="text" class="setting-input setting-input-mono" id="settingSandboxKey" placeholder="e2b_..." autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" />
             <button class="password-toggle" id="sandboxKeyToggle" type="button" aria-label="Toggle sandbox key visibility">
               <svg id="sandboxKeyToggleIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
@@ -3695,7 +3700,7 @@
           <label class="setting-label" for="settingTavilyKey">Tavily API Key</label>
           <p class="setting-desc">Powers web search. Your key, your Tavily account &mdash; stored in this browser and sent only to your own Worker, which keeps none of it. Get one at tavily.com.</p>
           <div class="password-wrap">
-            <input type="password" class="setting-input setting-input-mono" id="settingTavilyKey" placeholder="tvly-..." autocomplete="off" />
+            <input type="text" class="setting-input setting-input-mono" id="settingTavilyKey" placeholder="tvly-..." autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" />
             <button class="password-toggle" id="tavilyKeyToggle" type="button" aria-label="Toggle Tavily key visibility">
               <svg id="tavilyKeyToggleIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
@@ -6643,11 +6648,83 @@
         }
       }
 
+      // Password inputs report a fixed length after a reload (the browser's
+      // password echo), and putting the key itself in the field leaves it in
+      // the DOM. A stored key is shown as one bullet per character. The real
+      // value stays in this closure until the user reveals it or types a
+      // replacement. It is never written to a data attribute or the DOM.
+      var secretDrafts = {};
+
+      function showSecretField(input, stored, revealed) {
+        if (!input) return;
+        var value = stored || '';
+        if (!value || revealed) {
+          input.value = value;
+          input.removeAttribute('data-secret-mask');
+          input.classList.remove('secret-masked');
+          delete secretDrafts[input.id];
+          return;
+        }
+        secretDrafts[input.id] = value;
+        var n = value.length > 4096 ? 4096 : value.length;
+        input.value = new Array(n + 1).join('\u2022');
+        input.setAttribute('data-secret-mask', '1');
+        input.classList.add('secret-masked');
+      }
+
+      function readSecretField(input, stored) {
+        if (!input) return stored || '';
+        if (input.getAttribute('data-secret-mask') === '1') {
+          if (Object.prototype.hasOwnProperty.call(secretDrafts, input.id)) return secretDrafts[input.id];
+          return stored || '';
+        }
+        return input.value.trim();
+      }
+
+      function toggleSecretVisibility(input, stored, icon) {
+        var hidden = input.classList.contains('secret-masked') || input.getAttribute('data-secret-mask') === '1';
+        if (hidden) {
+          if (input.getAttribute('data-secret-mask') === '1') {
+            input.value = stored || '';
+            input.removeAttribute('data-secret-mask');
+            delete secretDrafts[input.id];
+          }
+          input.classList.remove('secret-masked');
+          if (icon) icon.innerHTML = ICONS.eyeOff;
+          return;
+        }
+        if ((stored || '') && input.value === stored) showSecretField(input, stored, false);
+        else if (input.value) input.classList.add('secret-masked');
+        if (icon) icon.innerHTML = ICONS.eye;
+      }
+
+      function bindSecretField(input) {
+        input.addEventListener('beforeinput', function(e) {
+          if (this.getAttribute('data-secret-mask') !== '1') return;
+          var type = e.inputType || '';
+          var inserting = type === 'insertText' || type === 'insertCompositionText' || type === 'insertFromPaste';
+          var deleting = type.indexOf('delete') === 0;
+          if (!inserting && !deleting) return;
+          if (type === 'insertFromPaste' && (e.data == null || e.data === '')) return;
+          e.preventDefault();
+          this.removeAttribute('data-secret-mask');
+          delete secretDrafts[this.id];
+          this.value = inserting ? (e.data || '') : '';
+          this.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        input.addEventListener('input', function() {
+          if (this.getAttribute('data-secret-mask') !== '1') return;
+          this.removeAttribute('data-secret-mask');
+          delete secretDrafts[this.id];
+          var typed = this.value.replace(/\u2022/g, '');
+          if (typed !== this.value) this.value = typed;
+        });
+      }
+
       function syncSettingsUI() {
         $('settingEndpoint').value = settings.apiEndpoint || '';
-        $('settingProxyKey').value = settings.proxyKey || '';
+        showSecretField($('settingProxyKey'), settings.proxyKey || '', false);
         $('settingProvider').value = settings.provider || 'openai';
-        $('settingApiKey').value = settings.apiKeys[settings.provider] || settings.apiKey || '';
         $('settingTemp').value = settings.temperature;
         $('tempValue').textContent = Number(settings.temperature).toFixed(2);
         $('settingMaxTokens').value = settings.maxTokens;
@@ -6667,7 +6744,8 @@
         renderEffortControl();
         closeEffortMenu($('settingsEffortWrap'));
         renderSearchModeControl();
-        $('settingTavilyKey').value = settings.tavilyKey || '';
+        showSecretField($('settingTavilyKey'), settings.tavilyKey || '', false);
+        if ($('tavilyKeyToggleIcon')) $('tavilyKeyToggleIcon').innerHTML = ICONS.eye;
         updateTavilyKeyStatus();
         renderSearchBackendControl();
         renderSearchDepthControl();
@@ -6688,7 +6766,8 @@
         var input = $('settingApiKey');
         if (cfg && cfg.apiKeyPlaceholder) { input.placeholder = cfg.apiKeyPlaceholder; }
         else { input.placeholder = 'Enter API key...'; }
-        input.value = settings.apiKeys[settings.provider] || settings.apiKey || '';
+        showSecretField(input, settings.apiKeys[settings.provider] || settings.apiKey || '', false);
+        if ($('apiKeyToggleIcon')) $('apiKeyToggleIcon').innerHTML = ICONS.eye;
       }
 
       function updateProviderURLInfo() {
@@ -6708,13 +6787,13 @@
 
       function closeSettings() {
         settings.apiEndpoint = $('settingEndpoint').value.trim();
-        settings.proxyKey = $('settingProxyKey').value.trim();
+        settings.proxyKey = readSecretField($('settingProxyKey'), settings.proxyKey || '');
         settings.provider = $('settingProvider').value;
-        var newKey = $('settingApiKey').value.trim();
+        var newKey = readSecretField($('settingApiKey'), settings.apiKeys[settings.provider] || settings.apiKey || '');
         if (newKey) { settings.apiKeys[settings.provider] = newKey; }
         else { delete settings.apiKeys[settings.provider]; }
         settings.apiKey = newKey;
-        settings.tavilyKey = $('settingTavilyKey').value.trim();
+        settings.tavilyKey = readSecretField($('settingTavilyKey'), settings.tavilyKey || '');
         settings.temperature = Number($('settingTemp').value);
         settings.maxTokens = Number($('settingMaxTokens').value);
         settings.thinking = $('settingThinking').checked;
@@ -6722,11 +6801,20 @@
         settings.systemPrompt = $('settingSystemPrompt').value.trim();
         settings.sandboxProvider = pendingSandboxProvider || 'e2b';
         if (!settings.sandboxKeys) settings.sandboxKeys = {};
-        var sbKey = $('settingSandboxKey').value.trim();
+        var sbProv = settings.sandboxProvider;
+        var sbStored = (settings.sandboxKeys && settings.sandboxKeys[sbProv]) || (sbProv === 'e2b' ? (settings.e2bKey || '') : '');
+        var sbKey = readSecretField($('settingSandboxKey'), sbStored);
         if (sbKey) settings.sandboxKeys[settings.sandboxProvider] = sbKey;
         else delete settings.sandboxKeys[settings.sandboxProvider];
         // Keep the legacy field in step so a rollback does not lose the key.
         if (settings.sandboxProvider === 'e2b') settings.e2bKey = sbKey;
+        showSecretField($('settingProxyKey'), settings.proxyKey, false);
+        showSecretField($('settingApiKey'), newKey, false);
+        showSecretField($('settingTavilyKey'), settings.tavilyKey, false);
+        showSecretField($('settingSandboxKey'), sbKey, false);
+        if ($('apiKeyToggleIcon')) $('apiKeyToggleIcon').innerHTML = ICONS.eye;
+        if ($('sandboxKeyToggleIcon')) $('sandboxKeyToggleIcon').innerHTML = ICONS.eye;
+        if ($('tavilyKeyToggleIcon')) $('tavilyKeyToggleIcon').innerHTML = ICONS.eye;
         settings.agentMaxSteps = Math.max(1, Math.min(Number($('settingAgentSteps').value) || 8, 25));
 
         // Validate active model
@@ -8380,33 +8468,34 @@
 
       function syncSandboxKeyField() {
         var input = $('settingSandboxKey');
-        if (input.type !== 'password') {
-          input.type = 'password';
-          $('sandboxKeyToggleIcon').innerHTML = ICONS.eye;
-        }
         var p = pendingSandboxProvider || activeSandboxProvider();
         var meta = SANDBOX_PROVIDERS[p] || SANDBOX_PROVIDERS.e2b;
         var keys = settings.sandboxKeys || {};
         var stored = keys[p] || (p === 'e2b' ? (settings.e2bKey || '') : '');
         $('sandboxKeyLabel').textContent = meta.label;
-        $('settingSandboxKey').placeholder = meta.placeholder;
-        $('settingSandboxKey').value = stored;
+        input.placeholder = meta.placeholder;
+        showSecretField(input, stored, false);
+        if ($('sandboxKeyToggleIcon')) $('sandboxKeyToggleIcon').innerHTML = ICONS.eye;
       }
 
       $('sandboxKeyToggle').addEventListener('click', function() {
-        var input = $('settingSandboxKey');
-        var icon = $('sandboxKeyToggleIcon');
-        if (input.type === 'password') { input.type = 'text'; icon.innerHTML = ICONS.eyeOff; }
-        else { input.type = 'password'; icon.innerHTML = ICONS.eye; }
+        var p = pendingSandboxProvider || activeSandboxProvider();
+        var keys = settings.sandboxKeys || {};
+        var stored = keys[p] || (p === 'e2b' ? (settings.e2bKey || '') : '');
+        var shown = readSecretField($('settingSandboxKey'), stored);
+        toggleSecretVisibility($('settingSandboxKey'), shown, $('sandboxKeyToggleIcon'));
       });
 
       $('sandboxProviderSegmented').addEventListener('click', function(e) {
         var btn = e.target.closest('.segmented-btn');
         if (!btn) return;
         // Stash whatever is typed before switching, so an unsaved key is not lost.
-        var typed = $('settingSandboxKey').value.trim();
+        var prev = pendingSandboxProvider;
+        var prevKeys = settings.sandboxKeys || {};
+        var prevStored = prevKeys[prev] || (prev === 'e2b' ? (settings.e2bKey || '') : '');
+        var typed = readSecretField($('settingSandboxKey'), prevStored);
         if (!settings.sandboxKeys) settings.sandboxKeys = {};
-        if (typed) settings.sandboxKeys[pendingSandboxProvider] = typed;
+        if (typed) settings.sandboxKeys[prev] = typed;
         pendingSandboxProvider = btn.getAttribute('data-sandbox');
         var btns = this.querySelectorAll('.segmented-btn');
         for (var i = 0; i < btns.length; i++) {
@@ -8416,10 +8505,8 @@
       });
 
       $('apiKeyToggle').addEventListener('click', function() {
-        var input = $('settingApiKey');
-        var icon = $('apiKeyToggleIcon');
-        if (input.type === 'password') { input.type = 'text'; icon.innerHTML = ICONS.eyeOff; }
-        else { input.type = 'password'; icon.innerHTML = ICONS.eye; }
+        var stored = readSecretField($('settingApiKey'), settings.apiKeys[settings.provider] || settings.apiKey || '');
+        toggleSecretVisibility($('settingApiKey'), stored, $('apiKeyToggleIcon'));
       });
 
       $('addModelBtn').addEventListener('click', function() {
@@ -8962,13 +9049,16 @@
         settings.searchDepth = (d === 'basic' || d === 'advanced') ? d : 'auto';
         renderSearchDepthControl();
       });
+      bindSecretField($('settingProxyKey'));
+      bindSecretField($('settingApiKey'));
+      bindSecretField($('settingSandboxKey'));
+      bindSecretField($('settingTavilyKey'));
       $('tavilyKeyToggle').addEventListener('click', function() {
-        var input = $('settingTavilyKey');
-        var icon = $('tavilyKeyToggleIcon');
-        if (input.type === 'password') { input.type = 'text'; icon.innerHTML = ICONS.eyeOff; }
-        else { input.type = 'password'; icon.innerHTML = ICONS.eye; }
+        var stored = readSecretField($('settingTavilyKey'), settings.tavilyKey || '');
+        toggleSecretVisibility($('settingTavilyKey'), stored, $('tavilyKeyToggleIcon'));
       });
       $('settingTavilyKey').addEventListener('input', function() {
+        if (this.getAttribute('data-secret-mask') === '1') return;
         settings.tavilyKey = this.value.trim();
         updateTavilyKeyStatus();
       });

@@ -1096,6 +1096,10 @@
       display: none;
     }
     .regenerate-menu.open { display: block; }
+    .regenerate-menu.drop-down {
+      bottom: auto;
+      top: calc(100% + 6px);
+    }
     .regenerate-item {
       display: flex;
       align-items: center;
@@ -5406,6 +5410,7 @@
             } else {
               closeRegenerateMenus();
               regenMenu.classList.add('open');
+              placeRegenerateMenu(regenMenu);
               retryBtn.setAttribute('aria-expanded', 'true');
             }
           });
@@ -5417,15 +5422,73 @@
         return actions;
       }
 
+      function resetRegenerateMenu(menu) {
+        menu.classList.remove('open');
+        menu.classList.remove('drop-down');
+        menu.style.position = '';
+        menu.style.top = '';
+        menu.style.left = '';
+        menu.style.right = '';
+        menu.style.bottom = '';
+        menu.style.zIndex = '';
+      }
+
       function closeRegenerateMenus() {
         document.querySelectorAll('.regenerate-menu.open').forEach(function(m) {
-          m.classList.remove('open');
+          resetRegenerateMenu(m);
           var act = m.closest('.message-actions');
           if (act) {
             var b = act.querySelector('.msg-action[title="Regenerate"]');
             if (b) b.setAttribute('aria-expanded', 'false');
           }
         });
+      }
+
+      // The menu prefers to open upward. A short reply leaves no gap under the
+      // user message, so it drops below the button instead. If the list would
+      // clip that, it is pinned to the viewport so the items stay readable.
+      function placeRegenerateMenu(menu) {
+        resetRegenerateMenu(menu);
+        menu.classList.add('open');
+        var anchor = menu.parentElement;
+        if (!anchor) return;
+        var anchorRect = anchor.getBoundingClientRect();
+        var menuRect = menu.getBoundingClientRect();
+        var message = menu.closest('.message');
+        var prev = message ? message.previousElementSibling : null;
+        var ceiling = 8;
+        if (prev && prev.classList.contains('message')) {
+          ceiling = Math.max(ceiling, prev.getBoundingClientRect().bottom + 8);
+        }
+        var need = menuRect.height + 6;
+        if (anchorRect.top - ceiling >= need && anchorRect.top - need >= 8) return;
+
+        menu.classList.add('drop-down');
+        var placed = menu.getBoundingClientRect();
+        var wrap = document.getElementById('messagesWrap');
+        var limit = window.innerHeight - 8;
+        if (wrap) limit = Math.min(limit, wrap.getBoundingClientRect().bottom);
+        if (placed.bottom <= limit && placed.top >= 8) return;
+
+        var top = anchorRect.bottom + 6;
+        if (top + menuRect.height > window.innerHeight - 8) {
+          top = Math.max(8, window.innerHeight - 8 - menuRect.height);
+        }
+        var left = Math.max(8, Math.min(anchorRect.left, window.innerWidth - menuRect.width - 8));
+        if (prev && prev.classList.contains('message')) {
+          var prevBox = prev.getBoundingClientRect();
+          var covers = top < prevBox.bottom - 4 && (top + menuRect.height) > prevBox.top + 4 &&
+            left < prevBox.right - 4 && (left + menuRect.width) > prevBox.left + 4;
+          if (covers && prevBox.bottom + 8 + menuRect.height <= window.innerHeight - 8) {
+            top = prevBox.bottom + 8;
+          }
+        }
+        menu.style.position = 'fixed';
+        menu.style.top = Math.round(top) + 'px';
+        menu.style.left = Math.round(left) + 'px';
+        menu.style.bottom = 'auto';
+        menu.style.right = 'auto';
+        menu.style.zIndex = '140';
       }
 
       // Everything that makes one reply distinct from its siblings. The token

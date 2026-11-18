@@ -1528,6 +1528,10 @@ const SANDBOX_MAX_TIMEOUT = 300;
 const SANDBOX_DEFAULT_TIMEOUT = 120;
 const EXEC_MAX_MS = 60000;
 const OUTPUT_CAP = 32768;
+// A single argv element longer than MAX_ARG_STRLEN (128 KiB) is rejected by
+// the kernel before the shell runs. The inline command is that element, so
+// a large script is uploaded and the command line only names the file.
+const SANDBOX_INLINE_ARG_MAX = 48 * 1024;
 
 // sandboxId and domain are interpolated into a URL, so without these checks
 // /sandbox/exec would be an open proxy to any host the caller names.
@@ -1543,6 +1547,23 @@ function validDomain(d, prov) {
 function envdBase(sandboxId, domain, prov) {
   const host = validDomain(domain, prov) ? domain : prov.defaultDomain;
   return 'https://' + E2B_ENVD_PORT + '-' + sandboxId + '.' + host;
+}
+
+async function writeSandboxFile(base, authHeaders, path, content, signal) {
+  const form = new FormData();
+  const name = path.slice(path.lastIndexOf('/') + 1) || 'omni_run';
+  form.append('file', new Blob([content], { type: 'application/octet-stream' }), name);
+  const headers = {};
+  if (authHeaders['X-API-Key']) headers['X-API-Key'] = authHeaders['X-API-Key'];
+  if (authHeaders['X-Access-Token']) headers['X-Access-Token'] = authHeaders['X-Access-Token'];
+  const res = await fetch(base + '/files?path=' + encodeURIComponent(path) + '&username=user', {
+    method: 'POST',
+    headers,
+    body: form,
+    signal,
+  });
+  if (!res.ok) return { ok: false, status: res.status };
+  return { ok: true };
 }
 
 function connectFrame(obj) {
@@ -1686,13 +1707,17 @@ async function handleSandbox(path, body, corsOrigin) {
     if (!code) return reply({ error: { message: 'Missing code' } }, 400);
     const language = body.language === 'bash' ? 'bash' : 'python';
 
-    // Base64 the payload and decode it inside the sandbox. Model-written code is
-    // full of quotes, newlines and backslashes; this sidesteps shell quoting
-    // entirely without needing a multipart file upload first.
+    // Short scripts are base64'd onto the command line so quotes and newlines
+    // never need shell quoting. A long script would exceed the kernel's
+    // per-argument limit, so it is written to the file and the command only
+    // names that file.
     const encoded = btoa(unescape(encodeURIComponent(code)));
     const file = language === 'bash' ? '/tmp/omni_run.sh' : '/tmp/omni_run.py';
     const runner = language === 'bash' ? 'bash' : 'python3';
-    const script = 'echo ' + encoded + ' | base64 -d > ' + file + ' && ' + runner + ' ' + file;
+    const inline = 'echo ' + encoded + ' | base64 -d > ' + file + ' && ' + runner + ' ' + file;
+    const base = envdBase(sandboxId, body.domain, prov);
+    const authHeaders = { 'X-API-Key': key };
+    if (body.token) authHeaders['X-Access-Token'] = body.token;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(body.timeoutMs || EXEC_MAX_MS, EXEC_MAX_MS));
@@ -1706,6 +1731,16 @@ async function handleSandbox(path, body, corsOrigin) {
     const started = Date.now();
 
     try {
+      let command = inline;
+      if (inline.length > SANDBOX_INLINE_ARG_MAX) {
+        const uploaded = await writeSandboxFile(base, authHeaders, file, code, controller.signal);
+        if (!uploaded.ok) {
+          clearTimeout(timer);
+          return reply({ error: { message: 'Could not upload the script to the sandbox (' + uploaded.status + ').' } }, 502);
+        }
+        command = runner + ' ' + file;
+      }
+
       const headers = {
         'Content-Type': 'application/connect+json',
         'connect-protocol-version': '1',
@@ -1713,11 +1748,11 @@ async function handleSandbox(path, body, corsOrigin) {
       };
       if (body.token) headers['X-Access-Token'] = body.token;
 
-      const res = await fetch(envdBase(sandboxId, body.domain, prov) + '/process.Process/Start', {
+      const res = await fetch(base + '/process.Process/Start', {
         method: 'POST',
         headers,
         body: connectFrame({
-          process: { cmd: '/bin/bash', args: ['-lc', script], envs: {}, cwd: '/home/user' },
+          process: { cmd: '/bin/bash', args: ['-lc', command], envs: {}, cwd: '/home/user' },
         }),
         signal: controller.signal,
       });

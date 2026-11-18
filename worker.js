@@ -1314,11 +1314,25 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
   }
 }
 
+// Gemini ids are one path segment (gemini-3.5-flash-lite). Anything else
+// could change the path, the query, or the host when it is interpolated.
+function googleModelPath(model) {
+  if (typeof model !== 'string') return '';
+  const id = model.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) return '';
+  return encodeURIComponent(id);
+}
+
 async function streamGoogle(model, apiKey, requestBody, encoder, writer, collectGrounding, stream) {
+  const modelId = googleModelPath(model);
+  if (!modelId) {
+    await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Invalid model id' } }) + '\n'));
+    return;
+  }
   const streaming = stream !== false;
   const url = streaming
-    ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`
-    : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    ? `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {

@@ -48,15 +48,98 @@ function searchCacheSet(key, value) {
 }
 
 // Never '*'. Echo one concrete origin, or omit the header.
+// The API responses are JSON, not a document. A locked-down policy here does
+// not apply to the static app, which loads its own scripts.
+function securityHeaders() {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  };
+}
+
 function corsHeaders(corsOrigin) {
   const headers = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Accept, X-Omni-Proxy-Key',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
+    ...securityHeaders(),
   };
   if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
   return headers;
+}
+
+// Matches the settings sliders. Anything outside this is a bad client, not a
+// request a provider should see.
+const TEMP_MIN = 0;
+const TEMP_MAX = 2;
+const MAX_TOKENS_MIN = 1;
+const MAX_TOKENS_MAX = 32768;
+
+function clampTemperature(value) {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : 0.7;
+  if (n < TEMP_MIN) return TEMP_MIN;
+  if (n > TEMP_MAX) return TEMP_MAX;
+  return n;
+}
+
+function clampMaxTokens(value) {
+  const n = typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : 2048;
+  if (n < MAX_TOKENS_MIN) return MAX_TOKENS_MIN;
+  if (n > MAX_TOKENS_MAX) return MAX_TOKENS_MAX;
+  return n;
+}
+
+function decodeChunks(chunks) {
+  let total = 0;
+  for (const c of chunks) total += c.byteLength || c.length;
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    const bytes = c instanceof Uint8Array ? c : new Uint8Array(c);
+    out.set(bytes, at);
+    at += bytes.length;
+  }
+  return new TextDecoder().decode(out);
+}
+
+// One JSON object for a caller that asked not to stream. The live path still
+// speaks NDJSON; this is the same events folded together.
+function collapseNdjson(chunks) {
+  const out = { content: '' };
+  const tools = {};
+  let sawError = null;
+  for (const line of decodeChunks(chunks).split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let event;
+    try { event = JSON.parse(trimmed); } catch (_) { continue; }
+    if (event.error) sawError = event.error;
+    if (typeof event.delta === 'string') out.content += event.delta;
+    if (typeof event.thinking_delta === 'string') out.thinking = (out.thinking || '') + event.thinking_delta;
+    if (event.usage) out.usage = Object.assign(out.usage || {}, event.usage);
+    if (event.stop_reason) out.stop_reason = event.stop_reason;
+    if (event.stop) out.stop = event.stop;
+    if (event.search) out.search = event.search;
+    if (event.server_timing) out.server_timing = event.server_timing;
+    if (event.tool_start) {
+      const i = event.tool_start.i;
+      if (!tools[i]) tools[i] = { id: '', name: '', arguments: '' };
+      if (event.tool_start.id) tools[i].id = event.tool_start.id;
+      if (event.tool_start.name) tools[i].name = event.tool_start.name;
+    }
+    if (event.tool_args && tools[event.tool_args.i]) {
+      tools[event.tool_args.i].arguments += event.tool_args.d || '';
+    }
+  }
+  const calls = Object.keys(tools).map((k) => tools[k]).filter((t) => t.name);
+  if (calls.length) out.tool_calls = calls;
+  if (!out.thinking) delete out.thinking;
+  if (sawError) out.error = sawError;
+  return out;
 }
 
 function jsonResponse(data, status, corsOrigin) {
@@ -331,18 +414,20 @@ function sanitizeSchemaForGoogle(schema) {
   return out;
 }
 
-function buildOpenAIRequest(model, messages, temperature, maxTokens, effort, tools) {
+function buildOpenAIRequest(model, messages, temperature, maxTokens, effort, tools, stream) {
+  const streaming = stream !== false;
   const isOModel = /^o[0-9]/.test(model);
   const body = {
     model,
     messages,
-    stream: true,
-    // Without this a strict OpenAI-compatible endpoint reports no usage at all
-    // while streaming, and the client silently falls back to counting
-    // characters. Estimated tokens that look like real ones are worse than no
-    // number, so ask for the real ones everywhere.
-    stream_options: { include_usage: true },
+    stream: streaming,
   };
+  // Without this a strict OpenAI-compatible endpoint reports no usage at all
+  // while streaming, and the client silently falls back to counting
+  // characters. Estimated tokens that look like real ones are worse than no
+  // number, so ask for the real ones everywhere. The field is rejected when
+  // stream is false, so it stays off that path.
+  if (streaming) body.stream_options = { include_usage: true };
   if (isOModel) {
     body.max_completion_tokens = maxTokens;
   } else {
@@ -438,7 +523,7 @@ function groupToolTurns(messages) {
   return turns;
 }
 
-function buildAnthropicRequest(model, messages, temperature, maxTokens, effortBudget, searchTool, tools) {
+function buildAnthropicRequest(model, messages, temperature, maxTokens, effortBudget, searchTool, tools, stream) {
   const systemMessages = messages.filter((m) => m.role === 'system').map((m) => m.content);
   const chatMessages = messages.filter((m) => m.role !== 'system');
 
@@ -465,7 +550,7 @@ function buildAnthropicRequest(model, messages, temperature, maxTokens, effortBu
     messages: anthropicMessages,
     max_tokens: maxTokens,
     temperature,
-    stream: true,
+    stream: stream !== false,
   };
   if (systemMessages.length) {
     body.system = systemMessages.map((s) => ({ type: 'text', text: s }));
@@ -796,9 +881,6 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer,
     return;
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
   const citedSources = [];
   const citedUrls = new Set();
 
@@ -913,33 +995,64 @@ async function streamOpenAICompatible(url, apiKey, requestBody, encoder, writer,
     }
   };
 
+  const finishOpenAI = async () => {
+    // Providers truncate without a finish_reason; never leave a slot unterminated.
+    if (toolSlots.size) await closeOpenSlots();
+    if (sawToolCall) await sendToolStop();
+    await emitCitedSources();
+  };
+
+  if (requestBody.stream === false) {
+    let parsed;
+    try { parsed = await response.json(); }
+    catch (_) {
+      await writer.write(encoder.encode(JSON.stringify({ error: { message: 'The provider returned an unreadable response.' } }) + '\n'));
+      return;
+    }
+    const choice = parsed.choices && parsed.choices[0];
+    const message = (choice && choice.message) || {};
+    const calls = Array.isArray(message.tool_calls)
+      ? message.tool_calls.map((tc, i) => Object.assign({}, tc, { index: typeof tc.index === 'number' ? tc.index : i }))
+      : undefined;
+    await handleChunk({
+      choices: [{
+        delta: {
+          content: typeof message.content === 'string' ? message.content : '',
+          reasoning_content: message.reasoning_content || message.reasoning || '',
+          tool_calls: calls,
+          annotations: message.annotations,
+        },
+        finish_reason: choice && choice.finish_reason,
+        message,
+      }],
+      usage: parsed.usage,
+    });
+    await finishOpenAI();
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const takeData = async (raw) => {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed || !trimmed.startsWith('data:')) return;
+    const data = trimmed.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    try { await handleChunk(JSON.parse(data)); } catch (_) { /* skip */ }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
     buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const data = trimmed.slice(6);
-      if (data === '[DONE]') continue;
-
-      try {
-        await handleChunk(JSON.parse(data));
-      } catch (_) { /* skip */ }
-    }
+    for (const line of lines) await takeData(line);
   }
-  if (buffer.trim().startsWith('data: ') && buffer.trim().slice(6) !== '[DONE]') {
-    try {
-      await handleChunk(JSON.parse(buffer.trim().slice(6)));
-    } catch (_) { /* skip */ }
-  }
-  // Providers truncate without a finish_reason; never leave a slot unterminated.
-  if (toolSlots.size) await closeOpenSlots();
-  if (sawToolCall) await sendToolStop();
-  await emitCitedSources();
+  buffer += decoder.decode();
+  if (buffer.trim()) await takeData(buffer);
+  await finishOpenAI();
 }
 
 async function streamAnthropic(apiKey, requestBody, encoder, writer) {
@@ -960,9 +1073,6 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
     return;
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
   let currentEvent = '';
   const searchSources = [];
   const seenSearchUrls = new Set();
@@ -973,21 +1083,84 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
   let nextSlot = 0;
   let sawToolUse = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+  const collectAnthropicSources = (results) => {
+    if (!Array.isArray(results)) return;
+    for (const r of results) {
+      if (!r || r.type !== 'web_search_result' || !r.url || seenSearchUrls.has(r.url)) continue;
+      seenSearchUrls.add(r.url);
+      searchSources.push({ title: (r.title || r.url).slice(0, 160), url: r.url, date: formatSourceDate(r.page_age) });
+      if (searchSources.length >= 10) break;
+    }
+  };
 
-    for (const line of lines) {
+  if (requestBody.stream === false) {
+    let parsed;
+    try { parsed = await response.json(); }
+    catch (_) {
+      await writer.write(encoder.encode(JSON.stringify({ error: { message: 'The provider returned an unreadable response.' } }) + '\n'));
+      return;
+    }
+    if (parsed.error || parsed.type === 'error') {
+      await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(null, parsed.error?.message || parsed.message || '', 'The provider returned an error.') } }) + '\n'));
+      return;
+    }
+    if (parsed.usage) {
+      await writer.write(encoder.encode(JSON.stringify({
+        usage: {
+          prompt_tokens: parsed.usage.input_tokens,
+          cached_tokens: parsed.usage.cache_read_input_tokens,
+          cache_write_tokens: parsed.usage.cache_creation_input_tokens,
+        }
+      }) + '\n'));
+    }
+    const blocks = Array.isArray(parsed.content) ? parsed.content : [];
+    for (const block of blocks) {
+      if (!block) continue;
+      if (block.type === 'text' && block.text) {
+        await writer.write(encoder.encode(JSON.stringify({ delta: block.text }) + '\n'));
+      } else if (block.type === 'thinking' && block.thinking) {
+        await writer.write(encoder.encode(JSON.stringify({ thinking_delta: block.thinking }) + '\n'));
+      } else if (block.type === 'tool_use') {
+        const slot = nextSlot++;
+        sawToolUse = true;
+        await writer.write(encoder.encode(JSON.stringify({
+          tool_start: { i: slot, id: block.id || 'call_' + slot, name: block.name || '' },
+        }) + '\n'));
+        await writer.write(encoder.encode(JSON.stringify({ tool_args: { i: slot, d: JSON.stringify(block.input || {}) } }) + '\n'));
+        await writer.write(encoder.encode(JSON.stringify({ tool_end: { i: slot } }) + '\n'));
+      } else if (block.type === 'web_search_tool_result') {
+        collectAnthropicSources(block.content);
+      }
+    }
+    if (parsed.usage && typeof parsed.usage.output_tokens === 'number') {
+      await writer.write(encoder.encode(JSON.stringify({
+        usage: { completion_tokens: parsed.usage.output_tokens },
+      }) + '\n'));
+    }
+    if (parsed.stop_reason) {
+      await writer.write(encoder.encode(JSON.stringify({ stop_reason: normalizeStopReason(parsed.stop_reason) }) + '\n'));
+    }
+    if (parsed.stop_reason === 'tool_use' || sawToolUse) {
+      await writer.write(encoder.encode(JSON.stringify({ stop: { reason: 'tool_use' } }) + '\n'));
+    }
+    if (searchSources.length) {
+      await writer.write(encoder.encode(JSON.stringify({ search: { query: '', sources: searchSources } }) + '\n'));
+    }
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const consumeAnthropicLine = async (line) => {
       if (line.startsWith('event: ')) {
         currentEvent = line.slice(7).trim();
-        continue;
+        return;
       }
-      if (!line.startsWith('data: ')) continue;
+      if (!line.startsWith('data: ')) return;
       const data = line.slice(6);
-      if (!data) continue;
+      if (!data) return;
 
       try {
         const parsed = JSON.parse(data);
@@ -1008,15 +1181,7 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
             }) + '\n'));
           }
         } else if (type === 'content_block_start' && parsed.content_block && parsed.content_block.type === 'web_search_tool_result') {
-          const results = parsed.content_block.content;
-          if (Array.isArray(results)) {
-            for (const r of results) {
-              if (!r || r.type !== 'web_search_result' || !r.url || seenSearchUrls.has(r.url)) continue;
-              seenSearchUrls.add(r.url);
-              searchSources.push({ title: (r.title || r.url).slice(0, 160), url: r.url, date: formatSourceDate(r.page_age) });
-              if (searchSources.length >= 10) break;
-            }
-          }
+          collectAnthropicSources(parsed.content_block.content);
         } else if (type === 'content_block_start' && parsed.content_block && parsed.content_block.type === 'tool_use') {
           const slot = nextSlot++;
           blockSlots.set(parsed.index, slot);
@@ -1067,8 +1232,19 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
           await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(null, parsed.error?.message || '', 'The provider returned an error.') } }) + '\n'));
         }
       } catch (_) { /* skip */ }
-    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) await consumeAnthropicLine(line);
   }
+  // A final SSE event with no trailing newline would otherwise be dropped.
+  buffer += decoder.decode();
+  if (buffer.length) await consumeAnthropicLine(buffer.replace(/\r$/, ''));
   // Guard against a truncated stream leaving a tool block unterminated.
   if (blockSlots.size) {
     for (const slot of blockSlots.values()) {
@@ -1082,8 +1258,11 @@ async function streamAnthropic(apiKey, requestBody, encoder, writer) {
   }
 }
 
-async function streamGoogle(model, apiKey, requestBody, encoder, writer, collectGrounding) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
+async function streamGoogle(model, apiKey, requestBody, encoder, writer, collectGrounding, stream) {
+  const streaming = stream !== false;
+  const url = streaming
+    ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -1099,9 +1278,6 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
     return;
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
   const searchSources = [];
   const seenSearchUrls = new Set();
   let nextSlot = 0;
@@ -1118,25 +1294,11 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const data = trimmed.slice(6);
-      if (!data) continue;
-
-      try {
-        const parsed = JSON.parse(data);
-        if (parsed.error) {
-          await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(parsed.error.code, parsed.error.message || '', 'The provider returned an error.') } }) + '\n'));
-          continue;
-        }
+  const handleGooglePayload = async (parsed) => {
+    if (parsed.error) {
+      await writer.write(encoder.encode(JSON.stringify({ error: { message: publicProviderError(parsed.error.code, parsed.error.message || '', 'The provider returned an error.') } }) + '\n'));
+      return;
+    }
 
         if (parsed.usageMetadata) {
           const um = parsed.usageMetadata;
@@ -1202,17 +1364,53 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
             }
           }
         }
-      } catch (_) { /* skip */ }
+  };
+
+  const finishGoogle = async () => {
+    // Gemini reports finishReason STOP even when it emitted a function call, so the
+    // presence of a call is the only reliable signal to continue the agent loop.
+    if (sawFunctionCall) {
+      await writer.write(encoder.encode(JSON.stringify({ stop: { reason: 'tool_use' } }) + '\n'));
     }
+    if (searchSources.length) {
+      await writer.write(encoder.encode(JSON.stringify({ search: { query: '', sources: searchSources } }) + '\n'));
+    }
+  };
+
+  if (!streaming) {
+    let parsed;
+    try { parsed = await response.json(); }
+    catch (_) {
+      await writer.write(encoder.encode(JSON.stringify({ error: { message: 'The provider returned an unreadable response.' } }) + '\n'));
+      return;
+    }
+    await handleGooglePayload(parsed);
+    await finishGoogle();
+    return;
   }
-  // Gemini reports finishReason STOP even when it emitted a function call, so the
-  // presence of a call is the only reliable signal to continue the agent loop.
-  if (sawFunctionCall) {
-    await writer.write(encoder.encode(JSON.stringify({ stop: { reason: 'tool_use' } }) + '\n'));
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const takeGoogleLine = async (raw) => {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed || !trimmed.startsWith('data:')) return;
+    const data = trimmed.slice(5).trim();
+    if (!data) return;
+    try { await handleGooglePayload(JSON.parse(data)); } catch (_) { /* skip */ }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) await takeGoogleLine(line);
   }
-  if (searchSources.length) {
-    await writer.write(encoder.encode(JSON.stringify({ search: { query: '', sources: searchSources } }) + '\n'));
-  }
+  buffer += decoder.decode();
+  if (buffer.trim()) await takeGoogleLine(buffer);
+  await finishGoogle();
 }
 
 
@@ -1227,16 +1425,17 @@ async function streamGoogle(model, apiKey, requestBody, encoder, writer, collect
 // which is the same reframing job this Worker already does for LLM protocols.
 // ---------------------------------------------------------------------------
 
-// Novita's Agent Sandbox is wire-compatible with E2B: same POST /sandboxes with
-// {templateID, timeout}, same sandboxID/domain/envdAccessToken response keys,
-// same DELETE and /timeout routes, same envd on 49983 behind a
-// {port}-{sandboxId}.{domain} host, and the same "process.Process" Connect
-// service. So the two differ only by base URL and domain, not by code path.
-// Verified against api.e2b.app's OpenAPI spec and novita-sandbox 2.1.1.
+// Novita's Agent Sandbox still speaks the v1 wire: POST /sandboxes with
+// {templateID, timeout}, sandboxID/domain/envdAccessToken, DELETE and /timeout,
+// envd on 49983 behind a {port}-{sandboxId}.{domain} host, and the same
+// "process.Process" Connect service. E2B create moved to POST /v2/sandboxes;
+// kill and timeout stay on the v1 routes. Verified against api.e2b.app's
+// OpenAPI spec (post /v2/sandboxes) and novita-sandbox 2.1.1.
 const SANDBOX_PROVIDERS = {
   e2b: {
     label: 'E2B',
     api: 'https://api.e2b.app',
+    createPath: '/v2/sandboxes',
     defaultDomain: 'e2b.app',
     // Covers the bare domain, regional subdomains and their test domain.
     domainRe: /^([a-z0-9-]+\.)*e2b(-[a-z0-9]+)?\.(app|dev)$/,
@@ -1244,6 +1443,7 @@ const SANDBOX_PROVIDERS = {
   novita: {
     label: 'Novita',
     api: 'https://api.us-phx-1.sandbox.novita.ai',
+    createPath: '/sandboxes',
     defaultDomain: 'us-phx-1.sandbox.novita.ai',
     domainRe: /^([a-z0-9-]+\.)*sandbox\.novita\.ai$/,
   },
@@ -1343,7 +1543,7 @@ function utf8(bytes) {
 }
 
 async function sandboxCreate(prov, key, timeoutSec, template) {
-  const res = await fetch(prov.api + '/sandboxes', {
+  const res = await fetch(prov.api + (prov.createPath || '/sandboxes'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
     body: JSON.stringify({
@@ -1831,8 +2031,11 @@ export default {
         STEMS.test(lower) || COMPARE.test(lower) || RECOMMEND.test(lower) || LOOKUP.test(lower);
     }
 
-    const temp = typeof temperature === 'number' ? temperature : 0.7;
-    const maxOut = typeof max_tokens === 'number' ? max_tokens : 2048;
+    const temp = clampTemperature(temperature);
+    const maxOut = clampMaxTokens(max_tokens);
+    // Missing or true keeps the live NDJSON stream. Only an explicit false
+    // waits for the whole provider response and returns one JSON object.
+    const wantStream = body.stream !== false;
     // Whitelist, not a spread: this is what keeps client-injected vendor fields
     // out of provider requests. Tool fields have to be listed or agent turns are
     // silently flattened into unusable {role, content} pairs.
@@ -1878,8 +2081,19 @@ export default {
       ? safeMessages.map((m) => Object.assign({}, m, { content: stripImageParts(m.content) }))
       : safeMessages;
 
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
+    const collected = [];
+    let readable = null;
+    let writer;
+    if (wantStream) {
+      const pair = new TransformStream();
+      readable = pair.readable;
+      writer = pair.writable.getWriter();
+    } else {
+      writer = {
+        write: async (chunk) => { collected.push(chunk); },
+        close: async () => {},
+      };
+    }
     const encoder = new TextEncoder();
 
     const streamPromise = (async () => {
@@ -1890,43 +2104,43 @@ export default {
         switch (provider) {
           case 'openai': {
             const url = PROVIDER_URLS.openai;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'deepinfra': {
             const url = PROVIDER_URLS.deepinfra;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'nvidia': {
             const url = PROVIDER_URLS.nvidia;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'moonshot': {
             const url = PROVIDER_URLS.moonshot;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'gmicloud': {
             const url = PROVIDER_URLS.gmicloud;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'together': {
             const url = PROVIDER_URLS.together;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'deepseek': {
             const url = PROVIDER_URLS.deepseek;
-            const reqBody = buildOpenAIRequest(model, deepseekMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, deepseekMessages, temp, maxOut, effortTier, agentTools, wantStream);
             if (effortTier) reqBody.thinking = { type: 'enabled' };
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
@@ -1938,15 +2152,15 @@ export default {
             // the built-in `web_search` tool is not available here either. xAI
             // searches through Tavily like the other OpenAI-compatible
             // providers.
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(url, apiKey, reqBody, encoder, writer);
             break;
           }
           case 'openrouter': {
             const url = PROVIDER_URLS.openrouter;
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, null, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, null, agentTools, wantStream);
             if (effortTier) reqBody.reasoning = { effort: effortTier };
-            const nativeSearch = !forceTavily && searchMode !== 'off';
+            const nativeSearch = !forceTavily && searchRequested;
             if (nativeSearch) {
               reqBody.tools = (reqBody.tools || []).concat([{ type: 'openrouter:web_search', parameters: { max_results: 5, max_uses: 5 } }]);
             }
@@ -1955,20 +2169,20 @@ export default {
           }
           case 'anthropic': {
             const effortBudget = ANTHROPIC_EFFORT_BUDGET[effortTier] || null;
-            const searchTool = !forceTavily && searchMode !== 'off' ? anthropicSearchTool(model) : null;
-            const reqBody = buildAnthropicRequest(model, safeMessages, temp, maxOut, effortBudget, searchTool, agentTools);
+            const searchTool = !forceTavily && searchRequested ? anthropicSearchTool(model) : null;
+            const reqBody = buildAnthropicRequest(model, safeMessages, temp, maxOut, effortBudget, searchTool, agentTools, wantStream);
             await streamAnthropic(apiKey, reqBody, encoder, writer);
             break;
           }
           case 'google': {
             const effortBudget = GOOGLE_EFFORT_BUDGET[effortTier] || null;
             const reqBody = buildGoogleRequest(model, safeMessages, temp, maxOut, effortBudget, agentTools);
-            const useNativeSearch = !forceTavily && searchMode !== 'off' && model.indexOf('gemini') === 0;
+            const useNativeSearch = !forceTavily && searchRequested && model.indexOf('gemini') === 0;
             if (useNativeSearch) {
               if (!reqBody.tools) reqBody.tools = [{ googleSearch: {} }];
               else reqBody.tools.push({ googleSearch: {} });
             }
-            await streamGoogle(model, apiKey, reqBody, encoder, writer, useNativeSearch);
+            await streamGoogle(model, apiKey, reqBody, encoder, writer, useNativeSearch, wantStream);
             break;
           }
           case 'custom': {
@@ -1980,7 +2194,7 @@ export default {
               await writer.write(encoder.encode(JSON.stringify({ error: { message: 'Custom base URL must be https and must not point at a private, link-local, or reserved address' } }) + '\n'));
               break;
             }
-            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools);
+            const reqBody = buildOpenAIRequest(model, safeMessages, temp, maxOut, effortTier, agentTools, wantStream);
             await streamOpenAICompatible(baseURL, apiKey, reqBody, encoder, writer, false, 'manual');
             break;
           }
@@ -1993,7 +2207,13 @@ export default {
       await writer.close();
     })();
 
-    ctx.waitUntil(streamPromise);
-    return streamToNDJSON(readable, auth.corsOrigin);
+    if (wantStream) {
+      ctx.waitUntil(streamPromise);
+      return streamToNDJSON(readable, auth.corsOrigin);
+    }
+    await streamPromise;
+    const collapsed = collapseNdjson(collected);
+    const failed = collapsed.error && !collapsed.content && !(collapsed.tool_calls && collapsed.tool_calls.length);
+    return jsonResponse(collapsed, failed ? 502 : 200, auth.corsOrigin);
   },
 };

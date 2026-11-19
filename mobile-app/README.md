@@ -42,6 +42,28 @@ dx serve --android
 
 `ANDROID_HOME` and `NDK_HOME` have to point at a working SDK. `minSdk` is 24. Cleartext HTTP is allowed so a local `http://` Worker can be used. Prefer `https://` for anything that is not a machine you control.
 
+### Android launcher icon (required workaround)
+
+**`[bundle] icon` in `Dioxus.toml` is ignored on Android** ([dioxus#3685](https://github.com/DioxusLabs/dioxus/issues/3685)). A normal `dx bundle` or full recompile still ships the green Android robot unless you patch the generated Gradle project.
+
+Committed mipmaps live in `app/assets/android-res/` (generated from `app/assets/icon.png`). After `dx bundle --platform android` (debug or release):
+
+```sh
+# from mobile-app/
+chmod +x scripts/*.sh
+./scripts/patch-android-launcher.sh debug   # or: release
+cd app/target/dx/*/debug/android/app       # adjust * to your app folder name
+./gradlew assembleDebug
+```
+
+Install `app/build/outputs/apk/debug/app-debug.apk`. Before uploading, unzip the APK and confirm `res/mipmap-xxxhdpi-v4/ic_launcher.webp` (or `.png`) is the dark square with the gold star—not the robot foreground paths in `ic_launcher_foreground.xml`.
+
+To refresh mipmaps after changing `icon.png`:
+
+```sh
+./scripts/gen-android-launcher-icons.sh
+```
+
 iOS needs a Mac with Xcode:
 
 ```sh

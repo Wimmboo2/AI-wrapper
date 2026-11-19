@@ -425,61 +425,6 @@
       color: var(--text-faint);
     }
 
-    .sidebar-footer {
-      padding: 10px;
-      border-top: 1px solid var(--border);
-    }
-
-    .user-chip {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      width: 100%;
-      padding: 8px 10px;
-      border-radius: 12px;
-      border: none;
-      background: transparent;
-      color: var(--text-secondary);
-      cursor: pointer;
-      transition: background 0.12s ease;
-      text-align: left;
-    }
-
-    .user-chip:hover { background: var(--bg-hover); }
-
-    .user-avatar {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: linear-gradient(145deg, #4a4a4a, #333);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      flex-shrink: 0;
-    }
-
-    body.incognito .user-avatar {
-      background: linear-gradient(145deg, #3d3a4a, #2a2835);
-      color: var(--incognito);
-    }
-
-    .user-meta { flex: 1; min-width: 0; }
-    .user-name {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .user-plan {
-      font-size: 11.5px;
-      color: var(--text-faint);
-    }
-
     /* Main */
     .main {
       flex: 1;
@@ -3320,16 +3265,6 @@
         </div>
         <div class="chat-list" id="chatList"></div>
       </div>
-
-      <div class="sidebar-footer">
-        <button class="user-chip" id="userChip" type="button">
-          <div class="user-avatar" id="userAvatar">O</div>
-          <div class="user-meta">
-            <div class="user-name" id="userName">Omni</div>
-            <div class="user-plan" id="userPlan">Local</div>
-          </div>
-        </button>
-      </div>
     </aside>
 
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
@@ -4587,16 +4522,10 @@
         document.body.classList.toggle('incognito', on);
         incognitoBtn.classList.toggle('active', on);
         if (on) {
-          $('userName').textContent = 'Incognito';
-          $('userPlan').textContent = 'Not saved';
-          $('userAvatar').textContent = 'I';
           composerNote.textContent = 'Incognito chats aren\u2019t stored on this device.';
           composerInput.placeholder = 'Message privately\u2026';
           $('recentsLabel').textContent = 'This session';
         } else {
-          $('userName').textContent = 'Omni';
-          $('userPlan').textContent = settings.provider ? getProviderConfig(settings.provider).name : 'Local';
-          $('userAvatar').textContent = 'O';
           composerNote.textContent = 'Omni can make mistakes. Check important info.';
           composerInput.placeholder = 'How can I help you today?';
           $('recentsLabel').textContent = 'Recents';
@@ -8496,7 +8425,6 @@
       $('resetSettingsBtn').addEventListener('click', resetSettings);
       $('exportSettingsBtn').addEventListener('click', exportSettings);
       $('importSettingsBtn').addEventListener('click', importSettings);
-      $('userChip').addEventListener('click', openSettings);
 
       settingsModal.addEventListener('click', function(e) { if (e.target === settingsModal) closeSettings(); });
 

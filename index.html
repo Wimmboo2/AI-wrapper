@@ -2233,39 +2233,26 @@
 
 
     .metrics-panel { display: none; }
-    /* Capped so an open panel scrolls inside itself instead of eating the
-       message list. The phone sheet overrides this with its own max-height. */
+    /* Desktop expands inline with no inner scroll — the chevron on the toggle
+       row is the only close control. Phones override this as a bottom sheet. */
+    .metrics-row.open {
+      overflow: visible;
+    }
+
     .metrics-row.open .metrics-panel {
       display: block;
-      max-height: min(48vh, 440px);
-      overflow-y: auto;
+      overflow: visible;
     }
 
     .metrics-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-      gap: 8px;
-      padding: 4px 0 8px;
+      grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+      gap: 4px 8px;
+      padding: 2px 0 4px;
     }
 
-    /* Close control. Hidden while collapsed; on desktop just the button,
-       since the toggle row already names the panel. Phones restyle the
-       whole bar into a sheet header. */
+    /* Sheet header and X close: phone bottom sheet only. */
     .metrics-sheet-head { display: none; }
-
-    .metrics-row.open .metrics-sheet-head {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 8px;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      background: var(--bg);
-      padding: 0 2px 6px;
-    }
-
-    .metrics-row.open .metrics-sheet-head span { display: none; }
 
     .metrics-sheet-close {
       border: none;
@@ -2273,7 +2260,7 @@
       color: var(--text-muted);
       cursor: pointer;
       padding: 4px;
-      display: inline-flex;
+      display: none;
     }
 
     .metrics-sheet-close svg { width: 18px; height: 18px; }
@@ -2357,9 +2344,9 @@
 
     .phase-bar {
       display: flex;
-      height: 5px;
+      height: 4px;
       border-radius: 3px;
-      margin-top: 6px;
+      margin-top: 4px;
       overflow: hidden;
       background: rgba(255, 255, 255, 0.06);
     }
@@ -2375,8 +2362,8 @@
     .phase-legend {
       display: flex;
       flex-wrap: wrap;
-      gap: 4px 10px;
-      margin-top: 6px;
+      gap: 2px 8px;
+      margin-top: 4px;
       font-family: var(--mono);
       font-size: 10.5px;
       color: var(--text-secondary);
@@ -2405,8 +2392,8 @@
     .metrics-foot {
       display: flex;
       flex-wrap: wrap;
-      gap: 3px 18px;
-      padding: 7px 2px 2px;
+      gap: 2px 12px;
+      padding: 4px 2px 0;
       margin-top: 2px;
       border-top: 1px solid var(--border);
       font-family: var(--mono);
@@ -3037,6 +3024,10 @@
       }
 
       .metrics-row.open .metrics-sheet-head span { display: inline; }
+
+      .metrics-sheet-close {
+        display: inline-flex;
+      }
 
       .metrics-grid {
         grid-template-columns: repeat(2, 1fr);

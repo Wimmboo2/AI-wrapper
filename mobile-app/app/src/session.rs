@@ -1,7 +1,7 @@
 //! One in-flight reply. The HTTP client lives here; the chat rules live in `omni-core`.
 
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dioxus::prelude::{spawn, ReadableExt, Signal, WritableExt};
 use futures_util::StreamExt;
@@ -79,6 +79,7 @@ async fn conversation(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tick.tick().await;
     let mut forced_final = false;
+    let origin = Instant::now();
     loop {
         if *cancel.borrow() {
             if app.read().generation == generation && app.read().store.is_streaming() {
@@ -92,7 +93,17 @@ async fn conversation(
                 .current_request()
                 .ok_or_else(|| "Nothing is running.".to_string())?
         };
-        match read_stream(client, app, &outbound, &mut cancel, &slot, &mut tick).await? {
+        match read_stream(
+            client,
+            app,
+            &outbound,
+            &mut cancel,
+            &slot,
+            &mut tick,
+            origin,
+        )
+        .await?
+        {
             Flow::Cancelled => {
                 if app.read().generation == generation && app.read().store.is_streaming() {
                     app.write().store.complete_stopped();
@@ -136,7 +147,9 @@ async fn conversation(
                                     .store
                                     .set_status(format!("Running {}…", call.name));
                                 keepalive(client, &app, &slot).await;
+                                let started = Instant::now();
                                 let content = run_one_tool(client, app, &slot, call).await;
+                                app.write().store.add_tool_ms(elapsed_since(started));
                                 results.push(ToolResult {
                                     id: call.id.clone(),
                                     name: call.name.clone(),
@@ -177,6 +190,10 @@ async fn conversation(
         }
     }
     Ok(())
+}
+
+fn elapsed_since(start: Instant) -> u64 {
+    start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn stopped_or_cap(call: &ToolCall, content: &str) -> ToolResult {
@@ -275,7 +292,9 @@ async fn read_stream(
     cancel: &mut watch::Receiver<bool>,
     slot: &Mutex<Option<SandboxSession>>,
     tick: &mut tokio::time::Interval,
+    origin: Instant,
 ) -> Result<Flow, String> {
+    app.write().store.clock(elapsed_since(origin));
     let response = send(client, outbound).await?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
@@ -298,6 +317,7 @@ async fn read_stream(
                     Some(Err(err)) => return Err(network_error(&err)),
                     Some(Ok(chunk)) => {
                         let text = String::from_utf8_lossy(&chunk);
+                        app.write().store.clock(elapsed_since(origin));
                         if app.write().store.apply_stream_chunk(&text) {
                             return Ok(Flow::Ended);
                         }

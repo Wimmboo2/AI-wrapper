@@ -22,6 +22,8 @@ pub struct SendOpts {
     pub search_override: Option<bool>,
     pub search_chip: bool,
     pub code_mode: bool,
+    /// Prepended to the wire text. The bubble keeps the words the user typed.
+    pub prefix: String,
 }
 
 #[derive(Clone, Debug)]
@@ -194,15 +196,20 @@ pub fn build_chat_request(
 pub fn slash_search(text: &str) -> Option<Result<String, String>> {
     let trimmed = text.trim();
     for prefix in ["/search", "/web"] {
-        if let Some(rest) = strip_command(trimmed, prefix) {
-            let query = rest.trim();
+        if let Some(query) = slash_query(trimmed, prefix) {
             if query.is_empty() {
                 return Some(Err("Type a query after /search.".into()));
             }
-            return Some(Ok(query.to_string()));
+            return Some(Ok(query));
         }
     }
     None
+}
+
+/// The text after a slash command, when `text` starts with that command.
+pub fn slash_query(text: &str, prefix: &str) -> Option<String> {
+    let rest = strip_command(text.trim(), prefix)?;
+    Some(rest.trim().to_string())
 }
 
 fn strip_command<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {

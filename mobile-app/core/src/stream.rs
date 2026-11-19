@@ -4,10 +4,22 @@ use serde_json::Value;
 
 use crate::chat::{SearchInfo, SearchSource};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Usage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ServerTiming {
+    pub source: Option<String>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub prompt_ms: Option<u64>,
+    pub gen_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +38,7 @@ pub struct StreamEvent {
     pub tool_args: Option<(u32, String)>,
     pub search: Option<SearchInfo>,
     pub usage: Option<Usage>,
+    pub server_timing: Option<ServerTiming>,
     pub stop_reason: Option<String>,
     pub error: Option<String>,
 }
@@ -89,6 +102,7 @@ fn event_from_value(value: &Value) -> StreamEvent {
     });
     let search = value.get("search").and_then(parse_search);
     let usage = value.get("usage").map(parse_usage);
+    let server_timing = value.get("server_timing").map(parse_server_timing);
     let stop_reason = value
         .get("stop_reason")
         .and_then(|v| v.as_str())
@@ -110,6 +124,7 @@ fn event_from_value(value: &Value) -> StreamEvent {
         tool_args,
         search,
         usage,
+        server_timing,
         stop_reason,
         error,
     }
@@ -203,6 +218,22 @@ fn parse_usage(value: &Value) -> Usage {
     Usage {
         input_tokens: number_field(value, &["prompt_tokens", "input_tokens"]),
         output_tokens: number_field(value, &["completion_tokens", "output_tokens"]),
+        cached_tokens: number_field(value, &["cached_tokens"]),
+        cache_write_tokens: number_field(value, &["cache_write_tokens"]),
+        reasoning_tokens: number_field(value, &["reasoning_tokens"]),
+    }
+}
+
+fn parse_server_timing(value: &Value) -> ServerTiming {
+    ServerTiming {
+        source: value
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        prompt_tokens: number_field(value, &["prompt_tokens"]),
+        completion_tokens: number_field(value, &["completion_tokens"]),
+        prompt_ms: number_field(value, &["prompt_ms"]),
+        gen_ms: number_field(value, &["gen_ms"]),
     }
 }
 

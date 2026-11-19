@@ -11,8 +11,12 @@ use crate::chat::{
     branch_ui, derive_snippet, step_to_api, AgentStep, BranchUi, Chat, ChatListItem, Message,
     ToolCallRecord, ToolResultRecord, TurnMetrics,
 };
+use crate::exchange::{self, ImportFile};
+use crate::files::{self, Attachment};
 use crate::id::now_ms;
+use crate::metrics::{self, chat_totals, display_metrics, prompt_stats, TurnSample};
 use crate::persist;
+use crate::providers;
 use crate::request::{self, BuiltRequest, Outbound, SendOpts};
 use crate::settings::Settings;
 use crate::stream::{self, NdjsonParser, StreamEvent};
@@ -52,10 +56,13 @@ struct PendingTool {
     args_text: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct UsageAccum {
     input: Option<u64>,
     output: Option<u64>,
+    cached: Option<u64>,
+    cache_write: Option<u64>,
+    reasoning: Option<u64>,
 }
 
 struct TurnState {
@@ -77,6 +84,18 @@ struct TurnState {
     status: String,
     errored: Option<String>,
     settled: bool,
+    now_ms: Option<u64>,
+    run_start_ms: Option<u64>,
+    samples: Vec<TurnSample>,
+    tool_ms: u64,
+    tool_calls: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditUi {
+    pub index: usize,
+    pub active: usize,
+    pub total: usize,
 }
 
 pub struct Store {
@@ -86,6 +105,8 @@ pub struct Store {
     pub incognito: bool,
     incognito_chat: Option<Chat>,
     turn: Option<TurnState>,
+    /// User message removed by regenerate, restored on the next send when the text matches.
+    pending_replay: Option<Message>,
 }
 
 impl Store {
@@ -97,6 +118,7 @@ impl Store {
             incognito: false,
             incognito_chat: None,
             turn: None,
+            pending_replay: None,
         }
     }
 
@@ -396,7 +418,16 @@ impl Store {
         Ok(())
     }
 
-    pub fn begin_send(&mut self, text: &str, mut opts: SendOpts) -> Result<Prepared, String> {
+    pub fn begin_send(&mut self, text: &str, opts: SendOpts) -> Result<Prepared, String> {
+        self.begin_send_with(text, &[], opts)
+    }
+
+    pub fn begin_send_with(
+        &mut self,
+        text: &str,
+        files: &[Attachment],
+        mut opts: SendOpts,
+    ) -> Result<Prepared, String> {
         if self.turn.is_some() {
             return Err("Wait for the current reply to finish.".into());
         }
@@ -405,18 +436,41 @@ impl Store {
         if let Some(slash) = request::slash_search(&text) {
             text = slash?;
             opts.search_override = Some(true);
+            opts.prefix.clear();
         }
-        if text.is_empty() {
+        let files = files::prepare_files(files)?;
+        if files.iter().any(|file| file.is_image()) && !providers::allows_vision(&self.settings) {
+            return Err("This model doesn't support images.".into());
+        }
+        let replay_matches = self.pending_replay.as_ref().is_some_and(|saved| {
+            saved.content == text || files::strip_attachment_marker(&saved.content) == text
+        });
+        if text.is_empty() && files.is_empty() && !replay_matches {
             return Err("Write a message first.".into());
         }
+        let user_message = if replay_matches {
+            self.pending_replay.clone().expect("replay")
+        } else {
+            let payload = files::user_payload(&text, &files, &opts.prefix);
+            let mut message = Message::user(payload.display);
+            message.api_content = payload.api;
+            message.attachments = payload.attachments;
+            message
+        };
         let agent_mode = self.active().map(|chat| chat.agent_mode).unwrap_or(false);
         let mut history = self
             .active()
             .map(|chat| history_of(&chat.messages))
             .unwrap_or_default();
-        history.push(serde_json::json!({ "role": "user", "content": text }));
-        let built = request::build_chat_request(&self.settings, history, &opts, agent_mode)?;
+        history.extend(user_message.to_api());
+        let mut built =
+            match request::build_chat_request(&self.settings, history, &opts, agent_mode) {
+                Ok(built) => built,
+                Err(err) => return Err(err),
+            };
+        apply_file_status(&mut built, &user_message.attachments);
         let notice = built.notice.clone();
+        self.pending_replay = None;
         if self.active().is_none() {
             self.new_chat();
         }
@@ -424,9 +478,12 @@ impl Store {
             .active_id
             .clone()
             .ok_or_else(|| "Start a chat first.".to_string())?;
+        let title = files::title_source(&user_message.content, &user_message.attachments);
         if let Some(chat) = self.chat_mut(&chat_id) {
-            chat.note_title_from_first_message(&text);
-            chat.messages.push(Message::user(text));
+            if !title.is_empty() {
+                chat.note_title_from_first_message(&title);
+            }
+            chat.messages.push(user_message);
             chat.messages.push(Message::assistant());
             chat.touch();
         }
@@ -435,6 +492,208 @@ impl Store {
             .outbound()
             .ok_or_else(|| "Could not start the reply.".to_string())?;
         Ok(Prepared { outbound, notice })
+    }
+
+    /// Replace an earlier user message, keep the old thread as a branch, and resend.
+    pub fn apply_edit(
+        &mut self,
+        index: usize,
+        text: &str,
+        files: &[Attachment],
+        opts: SendOpts,
+    ) -> Result<Prepared, String> {
+        if self.turn.is_some() {
+            return Err("Wait for the current reply to finish.".into());
+        }
+        self.settings.normalize();
+        let text = text.trim().to_string();
+        let files = files::prepare_files(files)?;
+        if text.is_empty() && files.is_empty() {
+            return Err("Write a message first.".into());
+        }
+        if files.iter().any(|file| file.is_image()) && !providers::allows_vision(&self.settings) {
+            return Err("This model doesn't support images.".into());
+        }
+        let payload = files::user_payload(&text, &files, "");
+        let mut user_message = Message::user(payload.display);
+        user_message.api_content = payload.api;
+        user_message.attachments = payload.attachments;
+        let chat = self
+            .active()
+            .ok_or_else(|| "Start a chat first.".to_string())?;
+        let existing = chat
+            .messages
+            .get(index)
+            .ok_or_else(|| "That message is gone.".to_string())?;
+        if existing.role != "user" {
+            return Err("Only a message you sent can be edited.".into());
+        }
+        let agent_mode = chat.agent_mode;
+        let mut history = history_of(&chat.messages[..index]);
+        history.extend(user_message.to_api());
+        let mut built = request::build_chat_request(&self.settings, history, &opts, agent_mode)?;
+        apply_file_status(&mut built, &user_message.attachments);
+        let notice = built.notice.clone();
+        let chat_id = self
+            .active_id
+            .clone()
+            .ok_or_else(|| "Start a chat first.".to_string())?;
+        let chat = self
+            .chat_mut(&chat_id)
+            .ok_or_else(|| "Start a chat first.".to_string())?;
+        let fork = chat
+            .snapshot_fork(index)
+            .ok_or_else(|| "That message is gone.".to_string())?;
+        chat.edit_forks.entry(index).or_default().push(fork);
+        let len = chat
+            .edit_forks
+            .get(&index)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        chat.edit_active.insert(index, len);
+        chat.edit_live.remove(&index);
+        chat.messages.truncate(index);
+        chat.messages.push(user_message);
+        chat.clear_suffix_maps(index);
+        chat.messages.push(Message::assistant());
+        chat.touch();
+        self.pending_replay = None;
+        self.install_turn(&chat_id, built);
+        let outbound = self
+            .outbound()
+            .ok_or_else(|| "Could not start the reply.".to_string())?;
+        Ok(Prepared { outbound, notice })
+    }
+
+    pub fn edit_state(&self, index: usize) -> Option<EditUi> {
+        let chat = self.active()?;
+        let forks = chat.edit_forks.get(&index)?;
+        if forks.is_empty() {
+            return None;
+        }
+        let active = chat.edit_active.get(&index).copied().unwrap_or(forks.len());
+        Some(EditUi {
+            index,
+            active,
+            total: forks.len() + 1,
+        })
+    }
+
+    pub fn cycle_edit(&mut self, index: usize, direction: i32) -> Result<(), String> {
+        if self.turn.is_some() {
+            return Err("Wait for the current reply to finish.".into());
+        }
+        let chat = self
+            .active_chat_mut()
+            .ok_or_else(|| "Start a chat first.".to_string())?;
+        let forks_len = chat
+            .edit_forks
+            .get(&index)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if forks_len == 0 {
+            return Err("No other versions.".into());
+        }
+        let current = chat
+            .snapshot_fork(index)
+            .ok_or_else(|| "That message is gone.".to_string())?;
+        let mut active = chat.edit_active.get(&index).copied().unwrap_or(forks_len);
+        if active > forks_len {
+            active = forks_len;
+        }
+        if active < forks_len {
+            chat.edit_forks.get_mut(&index).expect("forks")[active] = current;
+        } else {
+            chat.edit_live.insert(index, current);
+        }
+        let total = forks_len + 1;
+        let next = (active as i32 + direction).rem_euclid(total as i32) as usize;
+        let restored = if next < forks_len {
+            chat.edit_forks.get(&index).expect("forks")[next].clone()
+        } else {
+            chat.edit_live
+                .remove(&index)
+                .ok_or_else(|| "No other versions.".to_string())?
+        };
+        chat.restore_fork(index, restored);
+        chat.edit_active.insert(index, next);
+        chat.touch();
+        Ok(())
+    }
+
+    pub fn clock(&mut self, now_ms: u64) {
+        let Some(turn) = self.turn.as_mut() else {
+            return;
+        };
+        turn.now_ms = Some(now_ms);
+        if turn.run_start_ms.is_none() {
+            turn.run_start_ms = Some(now_ms);
+        }
+        let open_new = turn
+            .samples
+            .last()
+            .map(|sample| sample.sealed)
+            .unwrap_or(true);
+        if open_new {
+            turn.samples.push(TurnSample {
+                start_ms: Some(now_ms),
+                ..TurnSample::default()
+            });
+        } else if turn.samples.last().unwrap().start_ms.is_none() {
+            turn.samples.last_mut().unwrap().start_ms = Some(now_ms);
+        }
+    }
+
+    pub fn add_tool_ms(&mut self, elapsed_ms: u64) {
+        if let Some(turn) = self.turn.as_mut() {
+            turn.tool_ms = turn.tool_ms.saturating_add(elapsed_ms);
+        }
+    }
+
+    pub fn active_metric_sheet(&self) -> Option<metrics::MetricSheet> {
+        let sheet = if let Some(metrics) = self.preview_metrics() {
+            let totals = self
+                .active()
+                .map(|chat| chat_totals(&chat.messages))
+                .unwrap_or_default();
+            metrics::metric_sheet(&metrics, &totals)
+        } else {
+            let chat = self.active()?;
+            let metrics = display_metrics(&chat.messages)?;
+            metrics::metric_sheet(&metrics, &chat_totals(&chat.messages))
+        };
+        if sheet.rows.is_empty() && sheet.summary == "—" {
+            None
+        } else {
+            Some(sheet)
+        }
+    }
+
+    pub fn export_settings_file(&self) -> Result<String, String> {
+        exchange::export_settings(&self.settings)
+    }
+
+    pub fn export_chats_file(&self) -> Result<String, String> {
+        exchange::export_chats(&self.saved_chats())
+    }
+
+    pub fn replace_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+        self.normalize();
+    }
+
+    pub fn import_saved_chats(&mut self, mut chats: Vec<Chat>) -> Result<(), String> {
+        if self.turn.is_some() {
+            return Err("Wait for the current reply to finish.".into());
+        }
+        chats.retain(|chat| !chat.incognito);
+        self.chats = chats;
+        self.active_id = self.chats.first().map(|chat| chat.id.clone());
+        Ok(())
+    }
+
+    pub fn take_import(&self, raw: &str) -> Result<ImportFile, String> {
+        exchange::parse_import(raw)
     }
 
     pub fn apply_stream_chunk(&mut self, chunk: &str) -> bool {
@@ -452,6 +711,7 @@ impl Store {
             .map(|turn| turn.parser.finish())
             .unwrap_or_default();
         let fatal = self.apply_events(events);
+        self.seal_sample();
         let already_failed = self.turn.as_ref().and_then(|turn| turn.errored.clone());
         if fatal || already_failed.is_some() {
             let message = already_failed
@@ -547,6 +807,7 @@ impl Store {
             turn.parser = NdjsonParser::default();
             turn.tools.clear();
             turn.tool_order.clear();
+            turn.tool_calls = turn.tool_calls.saturating_add(calls.len() as u32);
             turn.usage_total.input = add_opt(turn.usage_total.input, turn.usage_turn.input);
             turn.usage_total.output = add_opt(turn.usage_total.output, turn.usage_turn.output);
             turn.usage_turn = UsageAccum::default();
@@ -589,7 +850,7 @@ impl Store {
         let _ = self.apply_events(events);
         self.settle(true);
         let chat_id = self.turn.as_ref().map(|turn| turn.chat_id.clone());
-        let metrics = self.metrics_now();
+        let metrics = self.metrics_now(true);
         if let Some(chat_id) = chat_id {
             if let Some(chat) = self.chat_mut(&chat_id) {
                 if let Some(message) = chat
@@ -615,7 +876,7 @@ impl Store {
         self.settle(true);
         let friendly = stream::friendly_error(message);
         let chat_id = self.turn.as_ref().map(|turn| turn.chat_id.clone());
-        let metrics = self.metrics_now();
+        let metrics = self.metrics_now(true);
         if let Some(chat_id) = chat_id {
             if let Some(chat) = self.chat_mut(&chat_id) {
                 if let Some(message_slot) = chat
@@ -645,40 +906,45 @@ impl Store {
             return Err("Nothing to regenerate.".into());
         }
         let parent = assistant_index - 1;
-        let chat = self
-            .active_chat_mut()
-            .ok_or_else(|| "Start a chat first.".to_string())?;
-        let parent_msg = chat
-            .messages
-            .get(parent)
-            .ok_or_else(|| "Nothing to regenerate.".to_string())?;
-        if parent_msg.role != "user" {
-            return Err("Nothing to regenerate.".into());
-        }
-        let user_text = parent_msg.content.clone();
-        let old = chat
-            .messages
-            .get(assistant_index)
-            .cloned()
-            .ok_or_else(|| "Nothing to regenerate.".to_string())?;
-        if old.role != "assistant" {
-            return Err("Nothing to regenerate.".into());
-        }
-        let live = chat.live_replies.remove(&parent);
-        let branches = chat.branches.entry(parent).or_default();
-        if let Some(live) = live {
-            branches.push(live);
-        }
-        let duplicate = branches.iter().any(|branch| {
-            branch.content == old.content && branch.steps.is_empty() && old.steps.is_empty()
-        });
-        if !duplicate {
-            branches.push(old.snapshot());
-        }
-        let len = branches.len();
-        chat.branch_active.insert(parent, len);
-        chat.messages.truncate(parent);
-        chat.touch();
+        let user_message = {
+            let chat = self
+                .active_chat_mut()
+                .ok_or_else(|| "Start a chat first.".to_string())?;
+            let parent_msg = chat
+                .messages
+                .get(parent)
+                .ok_or_else(|| "Nothing to regenerate.".to_string())?;
+            if parent_msg.role != "user" {
+                return Err("Nothing to regenerate.".into());
+            }
+            let user_message = parent_msg.clone();
+            let old = chat
+                .messages
+                .get(assistant_index)
+                .cloned()
+                .ok_or_else(|| "Nothing to regenerate.".to_string())?;
+            if old.role != "assistant" {
+                return Err("Nothing to regenerate.".into());
+            }
+            let live = chat.live_replies.remove(&parent);
+            let branches = chat.branches.entry(parent).or_default();
+            if let Some(live) = live {
+                branches.push(live);
+            }
+            let duplicate = branches.iter().any(|branch| {
+                branch.content == old.content && branch.steps.is_empty() && old.steps.is_empty()
+            });
+            if !duplicate {
+                branches.push(old.snapshot());
+            }
+            let len = branches.len();
+            chat.branch_active.insert(parent, len);
+            chat.messages.truncate(parent);
+            chat.touch();
+            user_message
+        };
+        let user_text = user_message.content.clone();
+        self.pending_replay = Some(user_message);
         Ok(user_text)
     }
 
@@ -757,6 +1023,11 @@ impl Store {
             status: built.status,
             errored: None,
             settled: false,
+            now_ms: None,
+            run_start_ms: None,
+            samples: Vec::new(),
+            tool_ms: 0,
+            tool_calls: 0,
         });
         // `begin_send` reports the notice through the built request. Stash it on
         // the status line only when it is a search warning the bubble should show.
@@ -802,6 +1073,9 @@ impl Store {
             Some(turn) => turn.chat_id.clone(),
             None => return false,
         };
+        if event.thinking_delta.is_some() {
+            self.mark_token(false);
+        }
         if let Some(delta) = event.thinking_delta {
             if show_thinking {
                 if let Some(chat) = self.chat_mut(&chat_id) {
@@ -819,6 +1093,7 @@ impl Store {
             }
         }
         if let Some(delta) = event.delta {
+            self.mark_token(true);
             self.apply_visible(&chat_id, &delta);
         }
         if let Some(start) = event.tool_start {
@@ -858,7 +1133,16 @@ impl Store {
                     stream::keep_count(turn.usage_turn.input, usage.input_tokens);
                 turn.usage_turn.output =
                     stream::keep_count(turn.usage_turn.output, usage.output_tokens);
+                turn.usage_turn.cached =
+                    stream::keep_count(turn.usage_turn.cached, usage.cached_tokens);
+                turn.usage_turn.cache_write =
+                    stream::keep_count(turn.usage_turn.cache_write, usage.cache_write_tokens);
+                turn.usage_turn.reasoning =
+                    stream::keep_count(turn.usage_turn.reasoning, usage.reasoning_tokens);
             }
+        }
+        if let Some(timing) = event.server_timing {
+            self.note_server_timing(timing);
         }
         if let Some(reason) = event.stop_reason {
             if let Some(turn) = self.turn.as_mut() {
@@ -987,13 +1271,153 @@ impl Store {
         }
     }
 
-    fn metrics_now(&mut self) -> Option<TurnMetrics> {
+    fn metrics_now(&mut self, partial: bool) -> Option<TurnMetrics> {
+        self.seal_sample();
         self.fold_usage();
-        self.turn.as_ref().map(|turn| TurnMetrics {
-            input_tokens: turn.usage_total.input,
-            output_tokens: turn.usage_total.output,
+        let turn = self.turn.as_ref()?;
+        let (prompt_chars, prompt_has_images) = prompt_stats(&turn.body);
+        let produced = self
+            .chat(&turn.chat_id)
+            .and_then(|chat| chat.messages.last())
+            .map(metrics::produced_chars)
+            .unwrap_or(0);
+        let window = providers::context_window(&self.settings);
+        Some(metrics::finalize_metrics(metrics::MetricDraft {
+            now_ms: turn.now_ms,
+            run_start_ms: turn.run_start_ms,
+            samples: turn.samples.clone(),
+            tool_ms: turn.tool_ms,
+            tool_calls: turn.tool_calls,
             stop_reason: turn.stop_reason.clone(),
-        })
+            partial,
+            produced_chars: produced,
+            prompt_chars,
+            prompt_has_images,
+            context_window: window,
+        }))
+    }
+
+    fn preview_metrics(&self) -> Option<TurnMetrics> {
+        let turn = self.turn.as_ref()?;
+        let mut samples = turn.samples.clone();
+        if samples.is_empty()
+            && (turn.usage_turn.input.is_some()
+                || turn.usage_turn.output.is_some()
+                || turn.run_start_ms.is_some())
+        {
+            samples.push(TurnSample {
+                start_ms: turn.run_start_ms.or(turn.now_ms),
+                ..TurnSample::default()
+            });
+        }
+        if let Some(sample) = samples.last_mut() {
+            if !sample.sealed {
+                sample.prompt_tokens =
+                    stream::keep_count(sample.prompt_tokens, turn.usage_turn.input);
+                sample.completion_tokens =
+                    stream::keep_count(sample.completion_tokens, turn.usage_turn.output);
+                sample.cached_tokens =
+                    stream::keep_count(sample.cached_tokens, turn.usage_turn.cached);
+                sample.cache_write_tokens =
+                    stream::keep_count(sample.cache_write_tokens, turn.usage_turn.cache_write);
+                sample.reasoning_tokens =
+                    stream::keep_count(sample.reasoning_tokens, turn.usage_turn.reasoning);
+                if sample.end_ms.is_none() {
+                    sample.end_ms = turn.now_ms;
+                }
+            }
+        }
+        let (prompt_chars, prompt_has_images) = prompt_stats(&turn.body);
+        let produced = self
+            .chat(&turn.chat_id)
+            .and_then(|chat| chat.messages.last())
+            .map(metrics::produced_chars)
+            .unwrap_or(0);
+        Some(metrics::finalize_metrics(metrics::MetricDraft {
+            now_ms: turn.now_ms,
+            run_start_ms: turn.run_start_ms,
+            samples,
+            tool_ms: turn.tool_ms,
+            tool_calls: turn.tool_calls,
+            stop_reason: turn.stop_reason.clone(),
+            partial: false,
+            produced_chars: produced,
+            prompt_chars,
+            prompt_has_images,
+            context_window: providers::context_window(&self.settings),
+        }))
+    }
+
+    fn seal_sample(&mut self) {
+        let Some(turn) = self.turn.as_mut() else {
+            return;
+        };
+        if turn
+            .samples
+            .last()
+            .map(|sample| sample.sealed)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if turn.samples.is_empty() {
+            turn.samples.push(TurnSample {
+                start_ms: turn.run_start_ms.or(turn.now_ms),
+                ..TurnSample::default()
+            });
+        }
+        let now = turn.now_ms;
+        let usage = turn.usage_turn.clone();
+        let sample = turn.samples.last_mut().unwrap();
+        sample.prompt_tokens = stream::keep_count(sample.prompt_tokens, usage.input);
+        sample.completion_tokens = stream::keep_count(sample.completion_tokens, usage.output);
+        sample.cached_tokens = stream::keep_count(sample.cached_tokens, usage.cached);
+        sample.cache_write_tokens =
+            stream::keep_count(sample.cache_write_tokens, usage.cache_write);
+        sample.reasoning_tokens = stream::keep_count(sample.reasoning_tokens, usage.reasoning);
+        if sample.end_ms.is_none() {
+            sample.end_ms = now;
+        }
+        sample.sealed = true;
+    }
+
+    fn mark_token(&mut self, visible: bool) {
+        let Some(turn) = self.turn.as_mut() else {
+            return;
+        };
+        let Some(now) = turn.now_ms else {
+            return;
+        };
+        if turn.samples.is_empty() || turn.samples.last().unwrap().sealed {
+            turn.samples.push(TurnSample {
+                start_ms: turn.run_start_ms.or(Some(now)),
+                ..TurnSample::default()
+            });
+        }
+        let sample = turn.samples.last_mut().unwrap();
+        if sample.first_token_ms.is_none() {
+            sample.first_token_ms = Some(now);
+        }
+        if visible {
+            if sample.first_visible_ms.is_none() {
+                sample.first_visible_ms = Some(now);
+            }
+            sample.delta_count = sample.delta_count.saturating_add(1);
+        }
+    }
+
+    fn note_server_timing(&mut self, timing: stream::ServerTiming) {
+        let Some(turn) = self.turn.as_mut() else {
+            return;
+        };
+        if turn.samples.is_empty() || turn.samples.last().unwrap().sealed {
+            turn.samples.push(TurnSample {
+                start_ms: turn.run_start_ms.or(turn.now_ms),
+                ..TurnSample::default()
+            });
+        }
+        let sample = turn.samples.last_mut().unwrap();
+        metrics::merge_timing(&mut sample.server, timing);
     }
 
     fn collect_tools(&self) -> Vec<ToolCall> {
@@ -1032,7 +1456,7 @@ impl Store {
 
     fn finish_reply(&mut self) {
         let chat_id = self.turn.as_ref().map(|turn| turn.chat_id.clone());
-        let metrics = self.metrics_now();
+        let metrics = self.metrics_now(false);
         if let Some(chat_id) = chat_id {
             if let Some(chat) = self.chat_mut(&chat_id) {
                 if let Some(message) = assistant_mut(chat) {
@@ -1070,6 +1494,17 @@ fn assistant_mut(chat: &mut Chat) -> Option<&mut Message> {
     chat.messages
         .last_mut()
         .filter(|message| message.role == "assistant")
+}
+
+fn apply_file_status(built: &mut BuiltRequest, files: &[Attachment]) {
+    let image = files.iter().any(|file| file.is_image());
+    if image && built.status.starts_with("Searching") {
+        built.status = "Searching web · Looking at images.".into();
+    } else if image && built.status == "Thinking." {
+        built.status = "Looking at images.".into();
+    } else if !files.is_empty() && built.status == "Thinking." {
+        built.status = "Reading files.".into();
+    }
 }
 
 fn history_of(messages: &[Message]) -> Vec<Value> {

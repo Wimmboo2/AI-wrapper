@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use omni_core::{storage_dir, Store};
+use omni_core::{storage_dir, Attachment, ImportFile, Store};
 use tokio::sync::watch;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,11 @@ pub struct Ui {
     pub custom_model_name: String,
     /// When true, new tokens keep the thread pinned to the bottom.
     pub follow: bool,
+    pub pending: Vec<Attachment>,
+    pub editing: Option<usize>,
+    pub template_label: String,
+    pub template_prefix: String,
+    pub metrics_open: bool,
 }
 
 impl Default for Ui {
@@ -49,6 +54,11 @@ impl Default for Ui {
             custom_model_id: String::new(),
             custom_model_name: String::new(),
             follow: true,
+            pending: Vec::new(),
+            editing: None,
+            template_label: String::new(),
+            template_prefix: String::new(),
+            metrics_open: false,
         }
     }
 }
@@ -59,6 +69,8 @@ pub struct AppState {
     pub ui: Ui,
     pub cancel: Option<watch::Sender<bool>>,
     pub generation: u64,
+    /// Held until the user confirms. The settings variant contains API keys.
+    pub pending_import: Option<ImportFile>,
 }
 
 impl AppState {
@@ -71,6 +83,7 @@ impl AppState {
             ui: Ui::default(),
             cancel: None,
             generation: 0,
+            pending_import: None,
         }
     }
 

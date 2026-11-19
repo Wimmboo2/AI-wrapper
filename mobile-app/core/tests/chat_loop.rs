@@ -1,7 +1,7 @@
 use std::fs;
 use std::time::UNIX_EPOCH;
 
-use omni_core::{SendOpts, Store, StreamEnd, ToolResult};
+use omni_core::{Attachment, SendOpts, Store, StreamEnd, ToolResult};
 
 fn ready() -> Store {
     let mut store = Store::fresh();
@@ -218,4 +218,126 @@ fn provider_error_event_becomes_a_short_message() {
         }
         other => panic!("expected failure, got {other:?}"),
     }
+}
+
+#[test]
+fn images_travel_with_the_message_and_visionless_models_refuse_them() {
+    let mut store = ready();
+    let image = Attachment {
+        name: "cat.png".into(),
+        mime: "image/png".into(),
+        data: "data:image/png;base64,aaaa".into(),
+    };
+    let prepared = store
+        .begin_send_with("Look", &[image], SendOpts::default())
+        .unwrap();
+    let messages = prepared.outbound.body["messages"].as_array().unwrap();
+    let parts = messages.last().unwrap()["content"].as_array().unwrap();
+    assert_eq!(parts[0]["text"], "Look");
+    assert_eq!(parts[1]["type"], "image_url");
+    assert_eq!(parts[1]["image_url"]["detail"], "auto");
+    let saved = &store.active().unwrap().messages[0];
+    assert_eq!(saved.content, "Look\n\n[Attached: cat.png]");
+    assert_eq!(saved.attachments[0].name, "cat.png");
+    store.finish_stream();
+    let again = store.prepare_regenerate(1).unwrap();
+    let prepared = store.begin_send(&again, SendOpts::default()).unwrap();
+    let messages = prepared.outbound.body["messages"].as_array().unwrap();
+    assert_eq!(messages.last().unwrap()["content"][1]["type"], "image_url");
+    store.finish_stream();
+
+    store.settings.provider = "nvidia".into();
+    store.settings.model = "nvidia/nemotron-3-ultra-550b-a55b".into();
+    store.normalize();
+    let err = store
+        .begin_send_with(
+            "Again",
+            &[Attachment {
+                name: "cat.png".into(),
+                mime: "image/png".into(),
+                data: "data:image/png;base64,aaaa".into(),
+            }],
+            SendOpts::default(),
+        )
+        .unwrap_err();
+    assert!(err.contains("doesn't support images"));
+}
+
+#[test]
+fn slash_prefix_is_on_the_wire_and_not_in_the_bubble() {
+    let mut store = ready();
+    let mut opts = SendOpts::default();
+    opts.prefix = "Translate the following text into natural English: ".into();
+    let prepared = store.begin_send("hola", opts).unwrap();
+    let messages = prepared.outbound.body["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.last().unwrap()["content"],
+        "Translate the following text into natural English: hola"
+    );
+    assert_eq!(store.active().unwrap().messages[0].content, "hola");
+}
+
+#[test]
+fn editing_a_user_message_branches_the_old_thread() {
+    let mut store = ready();
+    store.begin_send("Hello", SendOpts::default()).unwrap();
+    store.apply_stream_chunk("{\"delta\":\"Hi\"}\n");
+    store.finish_stream();
+    store.begin_send("Next", SendOpts::default()).unwrap();
+    store.apply_stream_chunk("{\"delta\":\"There\"}\n");
+    store.finish_stream();
+    store
+        .apply_edit(0, "Hello edited", &[], SendOpts::default())
+        .unwrap();
+    store.apply_stream_chunk("{\"delta\":\"New\"}\n");
+    store.finish_stream();
+    let again = store.prepare_regenerate(1).unwrap();
+    assert_eq!(again, "Hello edited");
+    store.begin_send(&again, SendOpts::default()).unwrap();
+    store.apply_stream_chunk("{\"delta\":\"Newer\"}\n");
+    store.finish_stream();
+    store.cycle_branch(0, -1).unwrap();
+    assert_eq!(store.active().unwrap().messages[1].content, "New");
+    store.cycle_branch(0, 1).unwrap();
+    assert_eq!(store.active().unwrap().messages[1].content, "Newer");
+    store.cycle_edit(0, -1).unwrap();
+    let chat = store.active().unwrap();
+    assert_eq!(chat.messages[0].content, "Hello");
+    assert_eq!(chat.messages[1].content, "Hi");
+    assert_eq!(chat.messages[2].content, "Next");
+    assert_eq!(chat.messages[3].content, "There");
+    store.cycle_edit(0, 1).unwrap();
+    assert_eq!(store.active().unwrap().messages[0].content, "Hello edited");
+    assert_eq!(store.active().unwrap().messages[1].content, "Newer");
+    store.cycle_branch(0, -1).unwrap();
+    assert_eq!(store.active().unwrap().messages[1].content, "New");
+}
+
+#[test]
+fn metrics_sheet_includes_speed_ttft_and_context() {
+    let mut store = ready();
+    store.begin_send("Hi", SendOpts::default()).unwrap();
+    store.clock(1_000);
+    store.clock(1_100);
+    store.apply_stream_chunk("{\"delta\":\"A\"}\n");
+    store.clock(1_200);
+    store.apply_stream_chunk(
+        "{\"delta\":\"B\"}\n{\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":4,\"cached_tokens\":1},\"stop_reason\":\"end_turn\",\"server_timing\":{\"source\":\"worker\",\"prompt_ms\":40,\"gen_ms\":80}}\n",
+    );
+    store.clock(1_700);
+    store.finish_stream();
+    let metrics = store.active().unwrap().messages[1].metrics.clone().unwrap();
+    assert_eq!(metrics.input_tokens, Some(5));
+    assert_eq!(metrics.output_tokens, Some(4));
+    assert_eq!(metrics.cached_tokens, Some(1));
+    assert_eq!(metrics.ttft_ms, Some(100));
+    assert_eq!(metrics.context_used, Some(9));
+    assert!(metrics.context_window > 0);
+    assert!(metrics.generation_tokens_per_second.is_some());
+    let sheet = store.active_metric_sheet().unwrap();
+    assert!(sheet.rows.iter().any(|row| row.label == "TTFT"));
+    assert!(sheet.rows.iter().any(|row| row.label == "Gen t/s"));
+    assert!(sheet.rows.iter().any(|row| row.label == "Context usage"));
+    assert!(sheet.rows.iter().any(|row| row.label == "Input"));
+    assert!(!sheet.summary.is_empty());
 }

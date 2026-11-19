@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::id::now_ms;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnMetrics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -15,7 +15,57 @@ pub struct TurnMetrics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_tokens_per_second: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_per_second: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_rate_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_engine: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub think_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_ms: Option<u64>,
+    #[serde(default)]
+    pub tool_ms: u64,
+    #[serde(default)]
+    pub tool_calls: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub rate_unmeasurable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used: Option<u64>,
+    #[serde(default)]
+    pub context_window: u32,
+    #[serde(default)]
+    pub tokens_estimated: bool,
+    #[serde(default)]
+    pub input_estimated: bool,
+    #[serde(default)]
+    pub output_estimated: bool,
+    #[serde(default)]
+    pub context_estimated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gen_window_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_window_ms: Option<u64>,
+    #[serde(default)]
+    pub partial: bool,
+    #[serde(default)]
+    pub turns: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -83,6 +133,11 @@ pub struct Message {
     pub steps: Vec<AgentStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<TurnMetrics>,
+    /// Wire content when it is not the plain display string. Images are an array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_content: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::files::Attachment>,
 }
 
 impl Message {
@@ -95,6 +150,8 @@ impl Message {
             search: None,
             steps: Vec::new(),
             metrics: None,
+            api_content: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -107,6 +164,8 @@ impl Message {
             search: None,
             steps: Vec::new(),
             metrics: None,
+            api_content: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -143,7 +202,11 @@ impl Message {
             }
             return out;
         }
-        vec![json!({ "role": self.role, "content": self.content })]
+        let content = self
+            .api_content
+            .clone()
+            .unwrap_or_else(|| Value::String(self.content.clone()));
+        vec![json!({ "role": self.role, "content": content })]
     }
 }
 
@@ -212,6 +275,32 @@ pub struct Chat {
     pub branch_active: BTreeMap<usize, usize>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub live_replies: BTreeMap<usize, BranchSnap>,
+    /// Earlier versions of a user message, including every reply that followed it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edit_forks: BTreeMap<usize, Vec<ThreadFork>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edit_active: BTreeMap<usize, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edit_live: BTreeMap<usize, ThreadFork>,
+}
+
+/// One saved version of a user message and the messages that followed it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadFork {
+    pub messages: Vec<Message>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branches: BTreeMap<usize, Vec<BranchSnap>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branch_active: BTreeMap<usize, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub live_replies: BTreeMap<usize, BranchSnap>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub later_forks: BTreeMap<usize, Vec<ThreadFork>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub later_active: BTreeMap<usize, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub later_live: BTreeMap<usize, ThreadFork>,
 }
 
 impl Chat {
@@ -233,7 +322,81 @@ impl Chat {
             branches: BTreeMap::new(),
             branch_active: BTreeMap::new(),
             live_replies: BTreeMap::new(),
+            edit_forks: BTreeMap::new(),
+            edit_active: BTreeMap::new(),
+            edit_live: BTreeMap::new(),
         }
+    }
+
+    pub fn snapshot_fork(&self, index: usize) -> Option<ThreadFork> {
+        if index >= self.messages.len() {
+            return None;
+        }
+        Some(ThreadFork {
+            messages: self.messages[index..].to_vec(),
+            branches: self
+                .branches
+                .iter()
+                .filter(|(key, _)| **key >= index)
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
+            branch_active: self
+                .branch_active
+                .iter()
+                .filter(|(key, _)| **key >= index)
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            live_replies: self
+                .live_replies
+                .iter()
+                .filter(|(key, _)| **key >= index)
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
+            later_forks: self
+                .edit_forks
+                .iter()
+                .filter(|(key, _)| **key > index)
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
+            later_active: self
+                .edit_active
+                .iter()
+                .filter(|(key, _)| **key > index)
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            later_live: self
+                .edit_live
+                .iter()
+                .filter(|(key, _)| **key > index)
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
+        })
+    }
+
+    pub fn restore_fork(&mut self, index: usize, fork: ThreadFork) {
+        self.messages.truncate(index);
+        self.messages.extend(fork.messages);
+        self.branches.retain(|key, _| *key < index);
+        self.branches.extend(fork.branches);
+        self.branch_active.retain(|key, _| *key < index);
+        self.branch_active.extend(fork.branch_active);
+        self.live_replies.retain(|key, _| *key < index);
+        self.live_replies.extend(fork.live_replies);
+        self.edit_forks.retain(|key, _| *key <= index);
+        self.edit_forks.extend(fork.later_forks);
+        self.edit_active.retain(|key, _| *key <= index);
+        self.edit_active.extend(fork.later_active);
+        self.edit_live.retain(|key, _| *key <= index);
+        self.edit_live.extend(fork.later_live);
+    }
+
+    pub fn clear_suffix_maps(&mut self, index: usize) {
+        self.branches.retain(|key, _| *key < index);
+        self.branch_active.retain(|key, _| *key < index);
+        self.live_replies.retain(|key, _| *key < index);
+        self.edit_forks.retain(|key, _| *key <= index);
+        self.edit_active.retain(|key, _| *key <= index);
+        self.edit_live.retain(|key, _| *key <= index);
     }
 
     pub fn touch(&mut self) {

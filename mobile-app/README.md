@@ -80,10 +80,29 @@ Writes are atomic and the files are mode `0600` where the OS allows it. Incognit
 - Regenerate and branch switching
 - Web search (Tavily, plus the providers that search natively)
 - Agent mode: `run_python`, `run_bash`, `write_file`, `read_file` on E2B or Novita
-- `/search` and `/web` in the composer
-- Code and Search chips on a single message
+- `/code`, `/search`, `/web`, `/explain`, `/summarize`, `/refactor`, and `/translate`
+- Code and Search chips, plus a prefix chip for the explainer, summary, refactor, and translate commands
+- Image and text attachments on models that accept them
+- Editing an earlier message, which keeps the old thread as a branch you can switch back to
+- A metrics sheet: tokens, generation and prefill speed, TTFT, context, stop reason
+- Settings export and import, and a separate chat export and import
 - Local persistence
 
-## What this pass does not include
+Enter in the composer inserts a newline. Send is the button.
 
-Attachments and vision uploads, voice and speech, the rest of the slash menu, settings import and export, editing an earlier message, and the full metrics sheet. Token counts and the stop reason are kept on the message. Enter in the composer inserts a newline; Send is the button.
+## How to verify
+
+From `mobile-app`:
+
+```bash
+cargo test -p omni-core
+cargo check -p omni-mobile
+```
+
+On a phone (`dx serve --android` or `dx serve --ios`):
+
+- Attach an image, send it, and confirm the picture stays in the thread. On a model without vision the app refuses the image.
+- Type `/` and run Explain, Summarize, Refactor, Translate, Code, and Search. `/search some question` sends immediately.
+- Export settings, confirm the toast says the file includes API keys, and import it back. Export chats and import those on a second check. The chat file does not contain the API key.
+- Edit an earlier message, send the new text, then use Prev to return to the old thread and Next to come back. Regenerate still switches reply branches.
+- Open the metrics line under the thread. It lists tokens, t/s, TTFT, and context without covering the conversation.

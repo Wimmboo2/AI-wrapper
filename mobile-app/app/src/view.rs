@@ -3,8 +3,9 @@
 use dioxus::prelude::*;
 use dioxus::prelude::{ReadableExt, WritableExt};
 use omni_core::{
-    all_providers, available_models, parse_markdown, provider, Block, CustomModel, ExtraModel,
-    Inline, Message, SendOpts, Settings,
+    all_providers, allows_vision, available_models, filter_slash, parse_markdown, pick_slash,
+    provider, slash_commands, strip_attachment_marker, Attachment, Block, CustomModel, ExtraModel,
+    ImportFile, Inline, Message, SendOpts, Settings, SlashPick,
 };
 
 use crate::session::{request_stop, spawn_generation};
@@ -255,13 +256,24 @@ fn MessageView(
     } else {
         "bubble assistant"
     };
-    let blocks = parse_markdown(&message.content);
+    let shown = if user {
+        strip_attachment_marker(&message.content)
+    } else {
+        message.content.clone()
+    };
+    let blocks = parse_markdown(&shown);
+    let attachments = message.attachments.clone();
     let thinking = message.thinking.clone();
     let thinking_open = !message.thinking_complete && !thinking.is_empty();
     let steps = message.steps.clone();
     let search = message.search.clone();
-    let metrics = message.metrics.clone().map(|metrics| metric_line(&metrics));
     let show_actions = !user && !live && (!message.content.is_empty() || !message.steps.is_empty());
+    let streaming_now = state.read().store.is_streaming();
+    let edit_branch = if user && !streaming_now {
+        state.read().store.edit_state(index)
+    } else {
+        None
+    };
     let branch = if show_actions {
         state.read().store.branch_state(index)
     } else {
@@ -306,10 +318,27 @@ fn MessageView(
                     p { "{thinking}" }
                 }
             }
+            if !attachments.is_empty() {
+                div { class: "attach-preview",
+                    for (file_index, file) in attachments.iter().enumerate() {
+                        {
+                            let name = file.name.clone();
+                            let src = image_src(file);
+                            rsx! {
+                                if let Some(src) = src {
+                                    img { key: "{file_index}", alt: "{name}", src: "{src}" }
+                                } else {
+                                    p { key: "{file_index}", class: "attach-name", "{name}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             div { class: "{body_class}",
-                if message.content.is_empty() && live {
+                if shown.is_empty() && live {
                     p { class: "status", "{status}" }
-                } else if !message.content.is_empty() {
+                } else if !shown.is_empty() {
                     {render_blocks(&blocks)}
                 }
             }
@@ -338,9 +367,24 @@ fn MessageView(
                     }
                 }
             }
-            if let Some(metrics) = metrics {
-                if !metrics.is_empty() {
-                    p { class: "meta", "{metrics}" }
+            if user && !live && !streaming_now {
+                div { class: "actions",
+                    if let Some(branch) = edit_branch {
+                        button {
+                            class: "text",
+                            r#type: "button",
+                            onclick: move |_| cycle_edit(state, branch.index, -1),
+                            "Prev"
+                        }
+                        span { class: "meta", "{branch.active + 1}/{branch.total}" }
+                        button {
+                            class: "text",
+                            r#type: "button",
+                            onclick: move |_| cycle_edit(state, branch.index, 1),
+                            "Next"
+                        }
+                    }
+                    button { class: "text", r#type: "button", onclick: move |_| start_edit(state, index), "Edit" }
                 }
             }
             if show_actions {
@@ -374,6 +418,16 @@ fn Composer(state: Signal<AppState>) -> Element {
     let streaming = state.read().store.is_streaming();
     let search_on = state.read().ui.search_chip;
     let code_on = state.read().ui.code_mode;
+    let editing = state.read().ui.editing;
+    let template = state.read().ui.template_label.clone();
+    let pending = state.read().ui.pending.clone();
+    let metrics_open = state.read().ui.metrics_open;
+    let sheet = state.read().store.active_metric_sheet();
+    let slash = if editing.is_none() {
+        filter_slash(&draft)
+    } else {
+        Vec::new()
+    };
     let agent = state
         .read()
         .store
@@ -384,9 +438,153 @@ fn Composer(state: Signal<AppState>) -> Element {
     let provider_name = provider(&state.read().store.settings.provider)
         .map(|item| item.name)
         .unwrap_or("Model");
-    let can_send = !streaming && !draft.trim().is_empty();
+    let can_send = !streaming && (!draft.trim().is_empty() || !pending.is_empty());
+    let summary = sheet
+        .as_ref()
+        .map(|item| item.summary.clone())
+        .unwrap_or_default();
+    let summary_tone = sheet
+        .as_ref()
+        .map(|item| item.summary_tone.clone())
+        .unwrap_or_default();
     rsx! {
         div { class: "composer",
+            if let Some(sheet) = sheet {
+                button {
+                    class: "text metrics-bar {summary_tone}",
+                    r#type: "button",
+                    onclick: move |_| {
+                        let next = !state.read().ui.metrics_open;
+                        state.write().ui.metrics_open = next;
+                    },
+                    "{summary}"
+                }
+                if metrics_open {
+                    div { class: "metrics-panel",
+                        div { class: "metric-grid",
+                            for (row_index, row) in sheet.rows.iter().enumerate() {
+                                {
+                                    let wide = if row.wide { " wide" } else { "" };
+                                    let tone = row.tone.clone();
+                                    let bar = row.bar;
+                                    let bar_tone = row.bar_tone.clone();
+                                    let label = row.label.clone();
+                                    let value = row.value.clone();
+                                    let detail = row.detail.clone();
+                                    let phases = if row.label == "Time breakdown" {
+                                        sheet.phases.clone()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    rsx! {
+                                        div { key: "{row_index}", class: "metric-cell{wide}",
+                                            p { class: "metric-label", "{label}" }
+                                            if !value.is_empty() {
+                                                p { class: "metric-value {tone}", "{value}" }
+                                            }
+                                            if !phases.is_empty() {
+                                                div { class: "phase-bar",
+                                                    for (phase_index, phase) in phases.iter().enumerate() {
+                                                        {
+                                                            let width = format!("{:.2}%", phase.pct);
+                                                            let class_name = phase.class_name.clone();
+                                                            rsx! {
+                                                                span {
+                                                                    key: "{phase_index}",
+                                                                    class: "phase-seg {class_name}",
+                                                                    style: "width: {width}",
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                div { class: "phase-legend",
+                                                    for (phase_index, phase) in phases.iter().enumerate() {
+                                                        span { key: "{phase_index}", "{phase.label}" }
+                                                    }
+                                                }
+                                            }
+                                            if let Some(pct) = bar {
+                                                div { class: "context-bar",
+                                                    span {
+                                                        class: "context-fill {bar_tone}",
+                                                        style: "width: {pct:.1}%",
+                                                    }
+                                                }
+                                            }
+                                            if !detail.is_empty() {
+                                                p { class: "metric-detail", "{detail}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for note in sheet.notes.iter() {
+                            p { class: "metric-note", "{note}" }
+                        }
+                        for note in sheet.warns.iter() {
+                            p { class: "metric-note warn", "{note}" }
+                        }
+                    }
+                }
+            }
+            if let Some(_) = editing {
+                div { class: "edit-banner",
+                    span { "Editing an earlier message" }
+                    button { class: "text", r#type: "button", onclick: move |_| cancel_edit(state), "Cancel" }
+                }
+            }
+            if !slash.is_empty() {
+                div { class: "slash-menu",
+                    for command in slash {
+                        {
+                            let key = command.key;
+                            let label = command.label;
+                            let hint = command.hint;
+                            rsx! {
+                                button {
+                                    key: "{key}",
+                                    class: "slash-item",
+                                    r#type: "button",
+                                    onclick: move |_| choose_slash(state, key),
+                                    span {
+                                        span { class: "slash-key", "/{key}" }
+                                        "{label}"
+                                    }
+                                    span { class: "slash-hint", "{hint}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !pending.is_empty() {
+                div { class: "pending-row",
+                    for (file_index, file) in pending.iter().enumerate() {
+                        {
+                            let name = file.name.clone();
+                            let src = image_src(file);
+                            rsx! {
+                                div { key: "{file_index}", class: "file-pill",
+                                    if let Some(src) = src {
+                                        img { alt: "", src: "{src}" }
+                                    }
+                                    span { "{name}" }
+                                    button {
+                                        class: "text",
+                                        r#type: "button",
+                                        onclick: move |_| {
+                                            state.write().ui.pending.remove(file_index);
+                                        },
+                                        "×"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             div { class: "chips",
                 button {
                     class: if agent { "chip on" } else { "chip" },
@@ -412,6 +610,23 @@ fn Composer(state: Signal<AppState>) -> Element {
                     },
                     "Code"
                 }
+                if !template.is_empty() {
+                    button {
+                        class: "chip on",
+                        r#type: "button",
+                        onclick: move |_| {
+                            state.write().ui.template_label.clear();
+                            state.write().ui.template_prefix.clear();
+                        },
+                        "{template} ×"
+                    }
+                }
+                button {
+                    class: "chip",
+                    r#type: "button",
+                    onclick: move |_| pick_files(state),
+                    "Attach"
+                }
                 button {
                     class: "chip model",
                     r#type: "button",
@@ -434,7 +649,7 @@ fn Composer(state: Signal<AppState>) -> Element {
                         r#type: "button",
                         disabled: !can_send,
                         onclick: move |_| submit(state),
-                        "Send"
+                        if editing.is_some() { "Save" } else { "Send" }
                     }
                 }
             }
@@ -749,7 +964,30 @@ fn SettingsPage(state: Signal<AppState>) -> Element {
             Field { label: "Sandbox timeout (seconds)", value: settings.agent_sandbox_timeout.to_string(), on_value: move |value: String| { if let Ok(parsed) = value.trim().parse::<u32>() { state.write().store.settings.agent_sandbox_timeout = parsed; state.write().store.normalize(); state.write().persist(); } } }
 
             h2 { "On this device" }
-            p { class: "hint", "Chats and settings are JSON files in the app sandbox. Keys are not written into chats.json." }
+            p { class: "hint", "Export writes a JSON file. A settings export includes your API keys, so treat the file like a password. Chat exports do not include keys. Nothing is written to the log." }
+            {
+                let pending = state.read().pending_import.is_some();
+                let kind = match state.read().pending_import.as_ref() {
+                    Some(ImportFile::Settings(_)) => "Replace the settings on this device with this file?",
+                    Some(ImportFile::Chats(_)) => "Replace the chats on this device with this file?",
+                    None => "",
+                };
+                rsx! {
+                    if pending {
+                        p { "{kind}" }
+                        div { class: "top-actions",
+                            button { class: "danger", r#type: "button", onclick: move |_| confirm_import(state), "Replace" }
+                            button { class: "text", r#type: "button", onclick: move |_| state.write().pending_import = None, "Cancel" }
+                        }
+                    } else {
+                        div { class: "chips",
+                            button { class: "text", r#type: "button", onclick: move |_| export_settings(state), "Export settings" }
+                            button { class: "text", r#type: "button", onclick: move |_| import_file(state), "Import" }
+                            button { class: "text", r#type: "button", onclick: move |_| export_chats(state), "Export chats" }
+                        }
+                    }
+                }
+            }
             if confirm_reset {
                 p { "Replace settings with the defaults? Chats stay." }
                 div { class: "top-actions",
@@ -914,20 +1152,12 @@ fn render_inline(inline: &Inline) -> Element {
     }
 }
 
-fn metric_line(metrics: &omni_core::TurnMetrics) -> String {
-    let mut parts = Vec::new();
-    if let Some(value) = metrics.input_tokens {
-        parts.push(format!("in {value}"));
+fn image_src(file: &Attachment) -> Option<String> {
+    if file.mime.starts_with("image/") && file.data.starts_with("data:image/") {
+        Some(file.data.clone())
+    } else {
+        None
     }
-    if let Some(value) = metrics.output_tokens {
-        parts.push(format!("out {value}"));
-    }
-    if let Some(reason) = &metrics.stop_reason {
-        if !reason.is_empty() {
-            parts.push(reason.clone());
-        }
-    }
-    parts.join(" · ")
 }
 
 fn safe_link(url: &str) -> String {
@@ -960,18 +1190,33 @@ fn copy_text(text: String) {
 
 fn submit(mut state: Signal<AppState>) {
     let draft = state.read().ui.draft.clone();
+    let files = state.read().ui.pending.clone();
+    let editing = state.read().ui.editing;
     let opts = SendOpts {
         search_override: None,
         search_chip: state.read().ui.search_chip,
         code_mode: state.read().ui.code_mode,
+        prefix: if editing.is_some() {
+            String::new()
+        } else {
+            state.read().ui.template_prefix.clone()
+        },
     };
-    let prepared = state.write().store.begin_send(&draft, opts);
+    let prepared = if let Some(index) = editing {
+        state.write().store.apply_edit(index, &draft, &files, opts)
+    } else {
+        state.write().store.begin_send_with(&draft, &files, opts)
+    };
     match prepared {
         Ok(prepared) => {
             if let Some(notice) = prepared.notice {
                 state.write().ui.toast = notice;
             }
             state.write().ui.draft.clear();
+            state.write().ui.pending.clear();
+            state.write().ui.editing = None;
+            state.write().ui.template_label.clear();
+            state.write().ui.template_prefix.clear();
             state.write().ui.search_chip = false;
             state.write().ui.code_mode = false;
             state.write().ui.follow = true;
@@ -1143,4 +1388,293 @@ fn remove_model(mut state: Signal<AppState>, id: &str) {
     }
     state.write().store.normalize();
     state.write().persist();
+}
+
+fn start_edit(mut state: Signal<AppState>, index: usize) {
+    if state.read().store.is_streaming() {
+        state.write().ui.toast = "Wait for the current reply to finish.".into();
+        return;
+    }
+    let message = state
+        .read()
+        .store
+        .active()
+        .and_then(|chat| chat.messages.get(index).cloned());
+    let Some(message) = message else {
+        return;
+    };
+    if message.role != "user" {
+        return;
+    }
+    let mut files = message.attachments;
+    if !allows_vision(&state.read().store.settings) {
+        let before = files.len();
+        files.retain(|file| !file.is_image());
+        if files.len() != before {
+            state.write().ui.toast =
+                "This model doesn't support images — attachments omitted".into();
+        }
+    }
+    state.write().ui.editing = Some(index);
+    state.write().ui.draft = strip_attachment_marker(&message.content);
+    state.write().ui.pending = files;
+    state.write().ui.template_label.clear();
+    state.write().ui.template_prefix.clear();
+}
+
+fn cancel_edit(mut state: Signal<AppState>) {
+    state.write().ui.editing = None;
+    state.write().ui.draft.clear();
+    state.write().ui.pending.clear();
+}
+
+fn cycle_edit(mut state: Signal<AppState>, index: usize, direction: i32) {
+    let cycled = state.write().store.cycle_edit(index, direction);
+    if let Err(err) = cycled {
+        state.write().ui.toast = err;
+        return;
+    }
+    state.write().persist();
+}
+
+fn choose_slash(mut state: Signal<AppState>, key: &'static str) {
+    let Some(command) = slash_commands()
+        .iter()
+        .find(|command| command.key == key)
+        .copied()
+    else {
+        return;
+    };
+    let draft = state.read().ui.draft.clone();
+    match pick_slash(&command, &draft) {
+        SlashPick::Send { text } => {
+            state.write().ui.draft = text;
+            state.write().ui.search_chip = true;
+            state.write().ui.template_label.clear();
+            state.write().ui.template_prefix.clear();
+            submit(state);
+        }
+        SlashPick::Arm {
+            label,
+            prefix,
+            code_mode,
+            web_search,
+        } => {
+            state.write().ui.draft.clear();
+            if prefix.is_empty() {
+                state.write().ui.template_label.clear();
+                state.write().ui.template_prefix.clear();
+            } else {
+                state.write().ui.template_label = label;
+                state.write().ui.template_prefix = prefix;
+            }
+            if code_mode {
+                state.write().ui.code_mode = true;
+            }
+            if web_search {
+                state.write().ui.search_chip = true;
+            }
+        }
+    }
+}
+
+fn pick_files(mut state: Signal<AppState>) {
+    spawn(async move {
+        let mut eval = document::eval(
+            r#"
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.multiple = true;
+            input.accept = 'image/*,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.rs,.toml,.yaml,.yml,.xml,.svg,.log';
+            input.onchange = async () => {
+              const out = [];
+              const files = input.files ? Array.from(input.files) : [];
+              for (const file of files) {
+                const mime = file.type || 'text/plain';
+                if (mime.startsWith('image/')) {
+                  const data = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result || ''));
+                    reader.onerror = () => resolve('');
+                    reader.readAsDataURL(file);
+                  });
+                  if (data.startsWith('data:image/')) out.push({ name: file.name || 'image', mime, data });
+                } else {
+                  let text = '';
+                  try { text = await file.text(); } catch (e) { text = ''; }
+                  if (text.length > 8000) text = text.slice(0, 8000) + '\n... [truncated]';
+                  out.push({ name: file.name || 'file', mime, data: text });
+                }
+              }
+              input.remove();
+              dioxus.send(out);
+            };
+            input.addEventListener('cancel', () => {
+              input.remove();
+              dioxus.send([]);
+            });
+            input.click();
+            "#,
+        );
+        let files = match tokio::time::timeout(
+            std::time::Duration::from_secs(90),
+            eval.recv::<Vec<Attachment>>(),
+        )
+        .await
+        {
+            Ok(Ok(files)) => files,
+            _ => return,
+        };
+        if files.is_empty() {
+            return;
+        }
+        let vision = allows_vision(&state.read().store.settings);
+        let mut skipped = false;
+        for file in files {
+            if file.mime.starts_with("image/") && !vision {
+                skipped = true;
+                continue;
+            }
+            if state.read().ui.pending.len() >= 8 {
+                state.write().ui.toast = "Attach up to 8 files.".into();
+                break;
+            }
+            state.write().ui.pending.push(file);
+        }
+        if skipped {
+            state.write().ui.toast = "This model doesn't support images.".into();
+        }
+    });
+}
+
+fn export_settings(mut state: Signal<AppState>) {
+    let exported = state.read().store.export_settings_file();
+    match exported {
+        Ok(json) => {
+            download_named(format!("omni-settings-{}.json", day_stamp()), json);
+            state.write().ui.toast = "Settings exported. The file includes your API keys.".into();
+        }
+        Err(err) => state.write().ui.toast = err,
+    }
+}
+
+fn export_chats(mut state: Signal<AppState>) {
+    let exported = state.read().store.export_chats_file();
+    match exported {
+        Ok(json) => {
+            download_named(format!("omni-chats-{}.json", day_stamp()), json);
+            state.write().ui.toast = "Chats exported.".into();
+        }
+        Err(err) => state.write().ui.toast = err,
+    }
+}
+
+fn import_file(mut state: Signal<AppState>) {
+    if state.read().store.is_streaming() {
+        state.write().ui.toast = "Wait for the current reply to finish.".into();
+        return;
+    }
+    spawn(async move {
+        let mut eval = document::eval(
+            r#"
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json,application/json';
+            input.onchange = async () => {
+              const file = input.files && input.files[0];
+              let text = '';
+              if (file) {
+                try { text = await file.text(); } catch (e) { text = ''; }
+              }
+              input.remove();
+              dioxus.send(text);
+            };
+            input.click();
+            "#,
+        );
+        let text =
+            match tokio::time::timeout(std::time::Duration::from_secs(90), eval.recv::<String>())
+                .await
+            {
+                Ok(Ok(text)) => text,
+                _ => return,
+            };
+        if text.trim().is_empty() {
+            return;
+        }
+        let parsed = state.write().store.take_import(&text);
+        match parsed {
+            Ok(file) => {
+                state.write().pending_import = Some(file);
+                state.write().ui.tab = Tab::Settings;
+            }
+            Err(err) => state.write().ui.toast = err,
+        }
+    });
+}
+
+fn confirm_import(mut state: Signal<AppState>) {
+    let file = state.write().pending_import.take();
+    match file {
+        Some(ImportFile::Settings(settings)) => {
+            state.write().store.replace_settings(settings);
+            state.write().ui.toast = "Settings imported.".into();
+            state.write().persist();
+        }
+        Some(ImportFile::Chats(chats)) => {
+            let imported = state.write().store.import_saved_chats(chats);
+            match imported {
+                Ok(()) => {
+                    state.write().ui.toast = "Chats imported.".into();
+                    state.write().persist();
+                }
+                Err(err) => state.write().ui.toast = err,
+            }
+        }
+        None => {}
+    }
+}
+
+fn download_named(name: String, json: String) {
+    spawn(async move {
+        let mut eval = document::eval(
+            r#"
+            const spec = await dioxus.recv();
+            const blob = new Blob([spec.json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = spec.name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1500);
+            dioxus.send(true);
+            "#,
+        );
+        if eval
+            .send(serde_json::json!({ "name": name, "json": json }))
+            .is_ok()
+        {
+            let _ = eval.recv::<bool>().await;
+        }
+    });
+}
+
+fn day_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let z = secs as i64 / 86_400 + 719_468;
+    let era = z / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}")
 }

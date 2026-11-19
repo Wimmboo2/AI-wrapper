@@ -848,6 +848,18 @@ pub fn available_models(settings: &Settings) -> Vec<ModelChoice> {
     out
 }
 
+pub fn allows_vision(settings: &Settings) -> bool {
+    find_model(settings)
+        .map(|model| model.vision)
+        .unwrap_or(true)
+}
+
+pub fn context_window(settings: &Settings) -> u32 {
+    find_model(settings)
+        .map(|model| model.ctx.max(1))
+        .unwrap_or(8192)
+}
+
 pub fn find_model(settings: &Settings) -> Option<ModelChoice> {
     available_models(settings)
         .into_iter()

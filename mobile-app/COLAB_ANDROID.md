@@ -22,7 +22,9 @@ chmod +x scripts/*.sh
 
 cd app
 # First run on a fresh runtime: install dx 0.7.10 + Android SDK/NDK (your existing setup)
-dx bundle --platform android --arch arm64
+rustup target add aarch64-linux-android
+# dx 0.7 has --target, not --arch. Colab is x86_64 — force arm64 or the APK won't run on your phone.
+dx bundle --platform android --target aarch64-linux-android
 
 cd ..
 # Match the folder dx created: debug or release (see target/dx/omni-mobile/)
@@ -43,6 +45,23 @@ sha256sum /content/Omni-mobile-debug-with-icon.apk
 ```
 
 Upload `/content/Omni-mobile-debug-with-icon.apk` to Drive.
+
+**Shorter cell** (same steps):
+
+```bash
+%%bash
+REPO=/content/AI-wrapper
+cd "$REPO/mobile-app"
+git -C "$REPO" fetch origin Cursor && git -C "$REPO" checkout Cursor && git -C "$REPO" reset --hard origin/Cursor
+./scripts/colab-build-apk.sh
+```
+
+**Already ran `dx bundle` once this session?** Skip the slow Rust step (~15–30 min):
+
+```bash
+%%bash
+cd /content/AI-wrapper/mobile-app && ./scripts/colab-build-apk.sh skip-dx
+```
 
 ## Quick sanity check before upload
 

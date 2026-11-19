@@ -124,6 +124,7 @@ instead of anything measured in the browser, and the footer names the engine.
 - Chat history persisted to IndexedDB (with automatic migration from legacy `localStorage`)
 - Full-text search across chat titles and message content
 - Export all chats as JSON, import from JSON files
+- Export settings as JSON, including API keys, and import them on another domain
 - Incognito mode — chat is never persisted, UI theme switches to a purple-tinted palette
 
 ### UX

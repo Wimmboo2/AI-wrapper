@@ -2565,6 +2565,12 @@
     .setting-group { margin-bottom: 20px; }
     .setting-group:last-child { margin-bottom: 0; }
 
+    .setting-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
     .setting-label-row {
       display: flex;
       align-items: center;
@@ -3733,6 +3739,17 @@
             <button type="button" class="segmented-btn" data-depth="advanced">Advanced</button>
           </div>
         </div>
+
+        <div class="setting-group">
+          <div class="setting-label-row">
+            <span class="setting-label">Backup</span>
+          </div>
+          <p class="setting-desc">Download every setting stored in this browser, including provider keys, the worker access key, the Tavily key, and sandbox keys. Import that file after changing domains. The file is plain JSON, so keep it private.</p>
+          <div class="setting-actions">
+            <button class="btn btn-secondary" id="exportSettingsBtn" type="button">Export</button>
+            <button class="btn btn-secondary" id="importSettingsBtn" type="button">Import</button>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" id="resetSettingsBtn">Reset</button>
@@ -4143,12 +4160,26 @@
         catch (_) { return fallback; }
       }
 
+      function cloneSettingDefault(value) {
+        if (Array.isArray(value)) return value.slice();
+        if (value && typeof value === 'object') {
+          var copy = {};
+          var keys = Object.keys(value);
+          for (var i = 0; i < keys.length; i++) copy[keys[i]] = value[keys[i]];
+          return copy;
+        }
+        return value;
+      }
+
       function mergeSettings(raw) {
         var merged = {};
         var keys = Object.keys(DEFAULT_SETTINGS);
         for (var i = 0; i < keys.length; i++) {
           var k = keys[i];
-          merged[k] = (raw && raw[k] != null) ? raw[k] : DEFAULT_SETTINGS[k];
+          // Copy default objects and arrays. Otherwise the live settings
+          // object and the defaults are the same reference, and a later
+          // Reset cannot clear keys that were written into that object.
+          merged[k] = (raw && raw[k] != null) ? raw[k] : cloneSettingDefault(DEFAULT_SETTINGS[k]);
           // A blank endpoint is "not set", including one already saved by an
           // older build. A URL the user actually typed is left alone.
           if (k === 'apiEndpoint' && !String(merged[k] || '').trim()) {
@@ -6785,7 +6816,7 @@
         settingsModal.classList.add('open');
       }
 
-      function closeSettings() {
+      function commitSettingsFromForm() {
         settings.apiEndpoint = $('settingEndpoint').value.trim();
         settings.proxyKey = readSecretField($('settingProxyKey'), settings.proxyKey || '');
         settings.provider = $('settingProvider').value;
@@ -6836,14 +6867,121 @@
         clampEffort();
 
         saveSettings();
-        settingsModal.classList.remove('open');
-        setIncognitoUI(incognito);
+      }
 
+      function refreshAfterSettingsChange() {
+        setIncognitoUI(incognito);
         updateComposerNote();
         populateComposerModelSelect();
         updateComposerEffort();
         syncAgentButton();
+      }
+
+      function closeSettings() {
+        commitSettingsFromForm();
+        settingsModal.classList.remove('open');
+        refreshAfterSettingsChange();
         showToast('Settings saved', 'info');
+      }
+
+      // A settings file is the way keys survive a domain change. localStorage
+      // does not. `kind` keeps a chat export from being applied as settings.
+      function plainObject(value) {
+        return !!value && typeof value === 'object' && !Array.isArray(value);
+      }
+
+      function finiteOr(value, fallback) {
+        var n = Number(value);
+        return isFinite(n) ? n : fallback;
+      }
+
+      function stringMap(value) {
+        var out = {};
+        if (!plainObject(value)) return out;
+        var keys = Object.keys(value);
+        for (var i = 0; i < keys.length; i++) {
+          if (typeof value[keys[i]] === 'string') out[keys[i]] = value[keys[i]];
+        }
+        return out;
+      }
+
+      function downloadJson(filename, data) {
+        var json = JSON.stringify(data, null, 2);
+        var blob = new Blob([json], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function exportSettings() {
+        commitSettingsFromForm();
+        downloadJson('omni-settings-' + new Date().toISOString().slice(0, 10) + '.json', {
+          version: 1,
+          kind: 'omni-settings',
+          exportedAt: Date.now(),
+          settings: settings,
+        });
+        showToast('Settings exported. The file includes your API keys.', 'info');
+      }
+
+      function importSettings() {
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.addEventListener('change', function() {
+          var file = input.files[0];
+          if (!file) return;
+          var reader = new FileReader();
+          reader.onload = function() {
+            try {
+              var data = JSON.parse(reader.result);
+              if (data && Array.isArray(data.chats) && !plainObject(data.settings)) {
+                showToast('That file is a chat export');
+                return;
+              }
+              if (!data || data.kind !== 'omni-settings' || data.version !== 1 || !plainObject(data.settings)) {
+                throw new Error('Invalid format');
+              }
+              if (!window.confirm('Replace settings in this browser with this file? API keys in the file will overwrite the ones stored here.')) return;
+              var next = mergeSettings(data.settings);
+              next.apiKeys = stringMap(next.apiKeys);
+              next.sandboxKeys = stringMap(next.sandboxKeys);
+              if (!plainObject(next.implicitThinkModels)) next.implicitThinkModels = {};
+              if (!Array.isArray(next.customModels)) next.customModels = [];
+              if (!Array.isArray(next.quickCustomModels)) next.quickCustomModels = [];
+              if (!Array.isArray(next.promptTemplates) || !next.promptTemplates.length) next.promptTemplates = DEFAULT_TEMPLATES.slice();
+              next.temperature = finiteOr(next.temperature, DEFAULT_SETTINGS.temperature);
+              next.maxTokens = finiteOr(next.maxTokens, DEFAULT_SETTINGS.maxTokens);
+              next.agentMaxSteps = Math.max(1, Math.min(finiteOr(next.agentMaxSteps, DEFAULT_SETTINGS.agentMaxSteps), 25));
+              next.agentSandboxTimeout = finiteOr(next.agentSandboxTimeout, DEFAULT_SETTINGS.agentSandboxTimeout);
+              next.customModelCtx = finiteOr(next.customModelCtx, DEFAULT_SETTINGS.customModelCtx);
+              next.thinking = next.thinking === true || next.thinking === 'true';
+              if (typeof next.apiKey !== 'string') next.apiKey = '';
+              if (typeof next.proxyKey !== 'string') next.proxyKey = '';
+              if (typeof next.tavilyKey !== 'string') next.tavilyKey = '';
+              if (typeof next.e2bKey !== 'string') next.e2bKey = '';
+              if (typeof next.apiEndpoint !== 'string' || !next.apiEndpoint.trim()) next.apiEndpoint = DEFAULT_SETTINGS.apiEndpoint;
+              if (typeof next.provider !== 'string') next.provider = DEFAULT_SETTINGS.provider;
+              if (typeof next.model !== 'string') next.model = DEFAULT_SETTINGS.model;
+              if (typeof next.customBaseURL !== 'string') next.customBaseURL = '';
+              if (typeof next.systemPrompt !== 'string') next.systemPrompt = '';
+              if (typeof next.sandboxProvider !== 'string') next.sandboxProvider = DEFAULT_SETTINGS.sandboxProvider;
+              settings = next;
+              clampEffort();
+              saveSettings();
+              syncSettingsUI();
+              refreshAfterSettingsChange();
+              showToast('Settings imported', 'info');
+            } catch (_) {
+              showToast('Invalid settings export file');
+            }
+          };
+          reader.readAsText(file);
+        });
+        input.click();
       }
 
       function resetSettings() {
@@ -8356,6 +8494,8 @@
       $('closeSettingsBtn').addEventListener('click', closeSettings);
       $('saveSettingsBtn').addEventListener('click', closeSettings);
       $('resetSettingsBtn').addEventListener('click', resetSettings);
+      $('exportSettingsBtn').addEventListener('click', exportSettings);
+      $('importSettingsBtn').addEventListener('click', importSettings);
       $('userChip').addEventListener('click', openSettings);
 
       settingsModal.addEventListener('click', function(e) { if (e.target === settingsModal) closeSettings(); });

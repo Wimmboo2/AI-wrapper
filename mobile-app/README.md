@@ -64,6 +64,8 @@ To refresh mipmaps after changing `icon.png`:
 ./scripts/gen-android-launcher-icons.sh
 ```
 
+Building on **Google Colab**: see [`COLAB_ANDROID.md`](COLAB_ANDROID.md) — use `%%bash` cells, not `%cd foo && bar` (that fails in Jupyter).
+
 iOS needs a Mac with Xcode:
 
 ```sh

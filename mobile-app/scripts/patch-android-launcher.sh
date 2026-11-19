@@ -16,15 +16,19 @@ if [[ ! -d "$ICON_RES/mipmap-mdpi" ]]; then
 fi
 
 resolve_target() {
-  local base="$APP_DIR/target/dx"
-  if [[ ! -d "$base" ]]; then
-    echo "No $base — run dx bundle --platform android from mobile-app/app first." >&2
+  local -a bases=()
+  [[ -d "$APP_DIR/target/dx" ]] && bases+=("$APP_DIR/target/dx")
+  [[ -d "$ROOT/target/dx" ]] && bases+=("$ROOT/target/dx")
+  if [[ ${#bases[@]} -eq 0 ]]; then
+    echo "No target/dx under $APP_DIR or $ROOT — run dx bundle --platform android first." >&2
     exit 1
   fi
   local -a candidates=()
-  while IFS= read -r -d '' res; do
-    candidates+=("$res")
-  done < <(find "$base" -path "*/$profile/android/app/app/src/main/res" -type d -print0 2>/dev/null)
+  for base in "${bases[@]}"; do
+    while IFS= read -r -d '' res; do
+      candidates+=("$res")
+    done < <(find "$base" -path "*/$profile/android/app/app/src/main/res" -type d -print0 2>/dev/null)
+  done
   if [[ ${#candidates[@]} -eq 0 ]]; then
     echo "Could not find .../$profile/android/app/app/src/main/res under $base" >&2
     exit 1

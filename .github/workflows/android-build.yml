@@ -5,9 +5,8 @@ on:
     branches:
       - main
       - Antigravity
-    paths:
-      - "mobile-app/**"
-      - ".github/workflows/android-build.yml"
+    tags:
+      - "omni-mobile-*"
   pull_request:
     branches:
       - main
@@ -15,6 +14,9 @@ on:
       - "mobile-app/**"
       - ".github/workflows/android-build.yml"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -51,10 +53,14 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Copy debug APK with release filename
+      - name: Stage and verify debug APK
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/Omni-mobile-1.0.apk
+          if [ -n "${ANDROID_HOME:-}" ] && [ -x "${ANDROID_HOME}/build-tools/35.0.0/apksigner" ]; then
+            "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify dist/Omni-mobile-1.0.apk
+          fi
+          sha256sum dist/Omni-mobile-1.0.apk
 
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
@@ -63,10 +69,23 @@ jobs:
           path: mobile-app/dist/Omni-mobile-1.0.apk
           if-no-files-found: error
 
-      - name: Assemble signed release APK (when signing secrets are configured)
-        if: ${{ env.HAS_SIGNING == 'true' }}
+      - name: Check release signing secrets
+        id: signing
         env:
-          HAS_SIGNING: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.KEYSTORE_PASSWORD != '' && secrets.KEY_ALIAS != '' && secrets.KEY_PASSWORD != '' }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble signed release APK
+        if: steps.signing.outputs.enabled == 'true'
+        env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           OMNI_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           OMNI_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
@@ -79,11 +98,52 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk dist/Omni-mobile-1.0-release.apk
 
       - name: Upload signed release APK artifact
-        if: ${{ env.HAS_SIGNING == 'true' }}
-        env:
-          HAS_SIGNING: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.KEYSTORE_PASSWORD != '' && secrets.KEY_ALIAS != '' && secrets.KEY_PASSWORD != '' }}
+        if: steps.signing.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Omni-mobile-1.0-release-apk
           path: mobile-app/dist/Omni-mobile-1.0-release.apk
           if-no-files-found: warn
+
+      - name: Publish GitHub Release on omni-mobile-* tag
+        if: startsWith(github.ref, 'refs/tags/omni-mobile-')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#omni-mobile-}"
+          APK_PATH="dist/Omni-mobile-${VERSION}.apk"
+          if [ -f "dist/Omni-mobile-1.0-release.apk" ]; then
+            cp dist/Omni-mobile-1.0-release.apk "$APK_PATH"
+            SIGNING_NOTE="Release-signed APK"
+          else
+            cp dist/Omni-mobile-1.0.apk "$APK_PATH"
+            SIGNING_NOTE="Debug-signed sideloadable APK (APK Signature Scheme v2; enable 'Install unknown apps' to sideload)"
+          fi
+          SHA="$(sha256sum "$APK_PATH" | awk '{print $1}')"
+          cat > release-notes.md <<EOF
+          ## Android download
+
+          Install **\`Omni-mobile-${VERSION}.apk\`** from the assets below on Android 8.0+ (API 26+).
+
+          - **Package:** \`dev.wimmboo.omni\`
+          - **Version:** \`${VERSION}\` (\`versionCode 2\`)
+          - **Signing:** ${SIGNING_NOTE}
+          - **SHA-256:** \`${SHA}\`
+          - **Pull Request:** https://github.com/Wimmboo2/AI-wrapper/pull/31
+
+          ## What's new in ${VERSION}
+
+          Full native **Kotlin + Jetpack Compose** rebuild replacing the scrapped Rust \`0.1.0\` attempt, with 1:1 visual, UX, and protocol parity with the Omni web app (excluding Read Aloud / TTS):
+
+          - **Exact Omni UI & Theming:** Custom dark (\`#1F1F1F\` / \`#D4A27F\`) and incognito (\`#18181B\` / \`#A89FD4\`) palettes, bundled \`Inter\` / \`Instrument Serif\` / \`JetBrains Mono\` fonts, and adaptive star launcher icon from \`icon.svg\`.
+          - **All 12 Providers & 90+ Models:** OpenAI, Anthropic, Google AI Studio, DeepInfra, NVIDIA NIM, Moonshot AI, GMI Cloud, Together AI, DeepSeek, xAI Grok, OpenRouter, and Custom OpenAI-compatible endpoints, plus quick custom model add/edit/delete.
+          - **Full Chat Experience:** Streaming responses via Ktor + OkHttp, Markdown with Prism Tomorrow syntax highlighting, Copy / Wrap / Download / sandboxed Live Code Preview (\`WebView\`), collapsible Thought process (including \`<think>\`, \`<thought>\`, \`[THINK]\`, \`<seed:think>\`, \`◁think▷\`, \`<|START_THINKING|>\`, and Harmony channels), Agent mode sandbox tool-call execution (E2B & Novita), BYOK web search (native & Tavily with inline citation chips and expandable Sources footer), slash commands, file/image attachments, voice dictation, message editing, regenerate options & branch switching, and full Metrics sheet.
+          - **Privacy & Security:** Room database for persisted chats (incognito stays strictly in memory), Android Keystore AES-256-GCM encryption for all BYOK API keys in DataStore, and 100% web-compatible JSON chat & settings export/import.
+          - **Backend compatibility:** Routes through \`https://omni-api.wimmboo.workers.dev\` with \`worker.js\` completely untouched; defaults \`Origin\` to \`https://claude-like-ai-wrapper.wimmboo.workers.dev\` (editable under Settings → **App Origin**) alongside optional \`X-Omni-Proxy-Key\`.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK_PATH" --clobber
+          else
+            gh release create "$TAG" "$APK_PATH" --title "Omni mobile ${VERSION}" --notes-file release-notes.md
+          fi

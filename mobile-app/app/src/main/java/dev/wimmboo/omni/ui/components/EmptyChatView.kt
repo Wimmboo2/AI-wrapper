@@ -91,7 +91,7 @@ fun EmptyChatView(
         }
 
         val showMissingNote = !state.incognito &&
-            (state.settings.effectiveApiKey().isBlank() || state.settings.apiEndpoint.isBlank())
+            (state.settings.effectiveApiKey().isBlank() || !state.settings.hasValidEndpoint())
 
         ComposerCard(
             text = state.composerText,
@@ -114,7 +114,6 @@ fun EmptyChatView(
             onAttachClick = onAttachClick,
             onRemoveFile = viewModel::removePendingFile,
             onToggleAgent = viewModel::toggleAgentMode,
-            onToggleWebSearch = viewModel::toggleWebSearch,
             onApplySlashTemplate = viewModel::applySlashTemplate,
             onDismissCodeMode = viewModel::dismissCodeMode,
             onDismissWebSearch = viewModel::dismissWebSearch,
@@ -125,6 +124,7 @@ fun EmptyChatView(
             onSelectEffort = viewModel::selectEffort,
             onToggleThinking = viewModel::toggleThinking,
             onMicClick = onMicClick,
+            onOpenSettings = viewModel::openSettings,
         )
 
         Spacer(Modifier.height(16.dp))

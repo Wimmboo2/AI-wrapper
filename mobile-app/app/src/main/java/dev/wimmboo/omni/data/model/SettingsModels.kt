@@ -1,7 +1,9 @@
 package dev.wimmboo.omni.data.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 
+@Immutable
 @Serializable
 data class CustomModel(
     val id: String = "",
@@ -9,6 +11,7 @@ data class CustomModel(
     val ctx: Int = 8192,
 )
 
+@Immutable
 @Serializable
 data class QuickCustomModel(
     val provider: String = "",
@@ -20,7 +23,10 @@ data class QuickCustomModel(
 /**
  * Exact 1:1 field-name parity with DEFAULT_SETTINGS in index.html so settings
  * exported from the web app import cleanly here and vice versa.
+ * Notice: apiEndpoint and appOrigin default to empty ("") so the user configures
+ * their own Cloudflare Worker URL in Settings rather than hitting a hardcoded endpoint.
  */
+@Immutable
 @Serializable
 data class OmniSettings(
     val apiEndpoint: String = OmniCatalog.DEFAULT_WORKER_ENDPOINT,
@@ -55,6 +61,13 @@ data class OmniSettings(
     /** Never leak secrets into logs or crash reports. */
     override fun toString(): String =
         "OmniSettings(apiEndpoint=$apiEndpoint, provider=$provider, model=$model, thinking=$thinking, effort=$effort, searchMode=$searchMode)"
+
+    fun hasValidEndpoint(): Boolean {
+        val ep = apiEndpoint.trim()
+        return ep.isNotEmpty() &&
+            (ep.startsWith("https://") || ep.startsWith("http://")) &&
+            !ep.contains(' ')
+    }
 
     fun effectiveApiKey(forProvider: String = provider): String {
         val stored = apiKeys[forProvider]?.trim()
@@ -153,7 +166,7 @@ data class OmniSettings(
     fun agentAvailable(): Boolean {
         val cfg = activeModelConfig()
         return activeSandboxKey().isNotBlank() &&
-            apiEndpoint.isNotBlank() &&
+            hasValidEndpoint() &&
             (cfg == null || cfg.tools)
     }
 
@@ -169,15 +182,17 @@ data class OmniSettings(
             nextModel = OmniCatalog.DEFAULT_MODEL_ID
         }
 
-        val nextEndpoint = apiEndpoint.trim().ifEmpty { OmniCatalog.DEFAULT_WORKER_ENDPOINT }
-        val nextSearchMode = if (searchMode in setOf("auto", "on", "off")) searchMode else "auto"
+        val nextEndpoint = apiEndpoint.trim().trimEnd('/')
+        val nextOrigin = appOrigin.trim().trimEnd('/')
+        val nextSearchMode = if (searchMode in VALID_SEARCH_MODES) searchMode else "auto"
         val nextSearchBackend = if (searchBackend == "tavily") "tavily" else "auto"
-        val nextSearchDepth = if (searchDepth in setOf("auto", "basic", "advanced")) searchDepth else "auto"
+        val nextSearchDepth = if (searchDepth in VALID_SEARCH_DEPTHS) searchDepth else "auto"
         val nextSandboxProvider = if (OmniCatalog.SANDBOX_PROVIDERS.containsKey(sandboxProvider)) sandboxProvider else "e2b"
         val nextTemplates = ensureSearchTemplate(promptTemplates.ifEmpty { OmniCatalog.DEFAULT_TEMPLATES })
 
         val base = copy(
             apiEndpoint = nextEndpoint,
+            appOrigin = nextOrigin,
             provider = nextProvider,
             model = nextModel,
             temperature = temperature.coerceIn(0.0, 2.0),
@@ -192,7 +207,6 @@ data class OmniSettings(
             customModelCtx = if (customModelCtx > 0) customModelCtx else 8192,
         )
 
-        // Validate model belongs to provider or fallback
         val all = base.allModelsForComposer()
         val resolvedModel = when {
             base.model == "__custom__" -> base.model
@@ -212,6 +226,9 @@ data class OmniSettings(
     }
 
     companion object {
+        private val VALID_SEARCH_MODES = setOf("auto", "on", "off")
+        private val VALID_SEARCH_DEPTHS = setOf("auto", "basic", "advanced")
+
         private fun ensureSearchTemplate(list: List<PromptTemplate>): List<PromptTemplate> {
             if (list.any { it.key == "search" }) return list
             val searchTpl = OmniCatalog.DEFAULT_TEMPLATES.firstOrNull { it.key == "search" } ?: return list
@@ -223,6 +240,7 @@ data class OmniSettings(
     }
 }
 
+@Immutable
 @Serializable
 data class SecretsBundle(
     val apiKey: String = "",
@@ -232,3 +250,4 @@ data class SecretsBundle(
     val e2bKey: String = "",
     val sandboxKeys: Map<String, String> = emptyMap(),
 )
+

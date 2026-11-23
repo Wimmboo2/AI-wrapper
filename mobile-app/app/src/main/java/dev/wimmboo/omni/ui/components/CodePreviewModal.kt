@@ -23,7 +23,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +59,11 @@ fun CodePreviewModal(
     val context = LocalContext.current
     val htmlDocument = remember(preview.code, preview.language) {
         preparePreviewDocument(preview.code, preview.language)
+    }
+    var webViewReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        webViewReady = true
     }
 
     Dialog(
@@ -102,76 +112,86 @@ fun CodePreviewModal(
                     )
                 }
 
-                AndroidView(
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            setBackgroundColor(android.graphics.Color.WHITE)
-                            settings.apply {
-                                javaScriptEnabled = true
-                                domStorageEnabled = false
-                                @Suppress("DEPRECATION")
-                                databaseEnabled = false
-                                allowFileAccess = false
-                                allowContentAccess = false
-                                @Suppress("DEPRECATION")
-                                allowFileAccessFromFileURLs = false
-                                @Suppress("DEPRECATION")
-                                allowUniversalAccessFromFileURLs = false
-                                cacheMode = WebSettings.LOAD_NO_CACHE
-                                builtInZoomControls = true
-                                displayZoomControls = false
-                                loadWithOverviewMode = true
-                                useWideViewPort = true
-                                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                            }
-                            webChromeClient = WebChromeClient()
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                ): Boolean {
-                                    val url = request?.url ?: return true
-                                    val scheme = url.scheme?.lowercase()
-                                    if (scheme == "http" || scheme == "https") {
-                                        try {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url.toString())))
-                                        } catch (_: Exception) {
-                                        }
-                                    }
-                                    return true
+                if (webViewReady) {
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                setBackgroundColor(android.graphics.Color.WHITE)
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = false
+                                    @Suppress("DEPRECATION")
+                                    databaseEnabled = false
+                                    allowFileAccess = false
+                                    allowContentAccess = false
+                                    @Suppress("DEPRECATION")
+                                    allowFileAccessFromFileURLs = false
+                                    @Suppress("DEPRECATION")
+                                    allowUniversalAccessFromFileURLs = false
+                                    cacheMode = WebSettings.LOAD_NO_CACHE
+                                    builtInZoomControls = true
+                                    displayZoomControls = false
+                                    loadWithOverviewMode = true
+                                    useWideViewPort = true
+                                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                 }
+                                webChromeClient = WebChromeClient()
+                                webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView?,
+                                        request: WebResourceRequest?,
+                                    ): Boolean {
+                                        val url = request?.url ?: return true
+                                        val scheme = url.scheme?.lowercase()
+                                        if (scheme == "http" || scheme == "https") {
+                                            try {
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url.toString())))
+                                            } catch (_: Exception) {
+                                            }
+                                        }
+                                        return true
+                                    }
+                                }
+                                tag = htmlDocument
+                                loadDataWithBaseURL(
+                                    "about:blank",
+                                    htmlDocument,
+                                    "text/html",
+                                    "UTF-8",
+                                    null,
+                                )
                             }
-                            loadDataWithBaseURL(
-                                "about:blank",
-                                htmlDocument,
-                                "text/html",
-                                "UTF-8",
-                                null,
-                            )
-                        }
-                    },
-                    update = { webView ->
-                        if (webView.tag != htmlDocument) {
-                            webView.tag = htmlDocument
-                            webView.loadDataWithBaseURL(
-                                "about:blank",
-                                htmlDocument,
-                                "text/html",
-                                "UTF-8",
-                                null,
-                            )
-                        }
-                    },
-                    onRelease = { webView ->
-                        webView.stopLoading()
-                        webView.loadUrl("about:blank")
-                        webView.destroy()
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .clip(RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)),
-                )
+                        },
+                        update = { webView ->
+                            if (webView.tag != htmlDocument) {
+                                webView.tag = htmlDocument
+                                webView.loadDataWithBaseURL(
+                                    "about:blank",
+                                    htmlDocument,
+                                    "text/html",
+                                    "UTF-8",
+                                    null,
+                                )
+                            }
+                        },
+                        onRelease = { webView ->
+                            webView.stopLoading()
+                            webView.destroy()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)),
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp))
+                            .background(Color.White),
+                    )
+                }
             }
         }
     }

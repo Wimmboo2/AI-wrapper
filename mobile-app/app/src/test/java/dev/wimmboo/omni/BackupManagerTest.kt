@@ -22,9 +22,18 @@ import org.junit.Test
 class BackupManagerTest {
 
     @Test
+    fun defaultSettingsLeaveWorkerEndpointAndOriginBlank() {
+        val defaults = OmniSettings().normalized()
+        assertEquals("", defaults.apiEndpoint)
+        assertEquals("", defaults.appOrigin)
+        assertEquals("", defaults.proxyKey)
+        assertFalse(defaults.hasValidEndpoint())
+    }
+
+    @Test
     fun settingsJsonMatchesWebSchemaAndRoundTrips() {
         val original = OmniSettings(
-            apiEndpoint = "https://omni-api.wimmboo.workers.dev",
+            apiEndpoint = "https://example-worker.example.workers.dev",
             provider = "anthropic",
             apiKey = "sk-ant-secret",
             apiKeys = mapOf("anthropic" to "sk-ant-secret", "openai" to "sk-openai-secret"),
@@ -57,6 +66,7 @@ class BackupManagerTest {
         val imported = BackupManager.importSettingsJson(exported)
         assertTrue(imported is SettingsImportResult.Success)
         val restored = (imported as SettingsImportResult.Success).settings
+        assertEquals("https://example-worker.example.workers.dev", restored.apiEndpoint)
         assertEquals("anthropic", restored.provider)
         assertEquals("sk-ant-secret", restored.effectiveApiKey("anthropic"))
         assertEquals("sk-openai-secret", restored.effectiveApiKey("openai"))
@@ -104,7 +114,7 @@ class BackupManagerTest {
         val result = BackupManager.importSettingsJson(webJson)
         assertTrue(result is SettingsImportResult.Success)
         val s = (result as SettingsImportResult.Success).settings
-        assertEquals("https://omni-api.wimmboo.workers.dev", s.apiEndpoint)
+        assertEquals("", s.apiEndpoint)
         assertEquals("openai", s.provider)
         assertEquals("gpt-6.1-sol", s.model)
         assertEquals("tvly-web", s.tavilyKey)

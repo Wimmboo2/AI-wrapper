@@ -188,13 +188,13 @@ fun OmniApp(
                         val lastMsg = msgs.lastOrNull()
                         val scrollTick = Triple(
                             msgs.size,
-                            lastMsg?.content?.length ?: 0,
-                            (lastMsg?.thinking?.length ?: 0) + (lastMsg?.steps?.size ?: 0),
+                            (lastMsg?.content?.length ?: 0) / 16,
+                            ((lastMsg?.thinking?.length ?: 0) / 16) + (lastMsg?.steps?.size ?: 0),
                         )
 
-                        LaunchedEffect(scrollTick, currentChat.id) {
+                        LaunchedEffect(scrollTick, currentChat.id, isStreaming) {
                             if (!userScrolledUp && !listState.isScrollInProgress && msgs.isNotEmpty()) {
-                                listState.scrollToItem(msgs.lastIndex, scrollOffset = Int.MAX_VALUE)
+                                listState.scrollToItem(msgs.lastIndex, scrollOffset = 100_000)
                             }
                         }
 
@@ -219,6 +219,7 @@ fun OmniApp(
                                 itemsIndexed(
                                     items = msgs,
                                     key = { index, m -> "${currentChat.id}_${index}_${m.role}" },
+                                    contentType = { _, m -> m.role },
                                 ) { idx, msg ->
                                     val streamingThis = isStreaming && idx == msgs.lastIndex && msg.role == "assistant"
                                     MessageRow(
@@ -290,7 +291,6 @@ fun OmniApp(
                                 onAttachClick = onRequestAttachFiles,
                                 onRemoveFile = viewModel::removePendingFile,
                                 onToggleAgent = viewModel::toggleAgentMode,
-                                onToggleWebSearch = viewModel::toggleWebSearch,
                                 onApplySlashTemplate = viewModel::applySlashTemplate,
                                 onDismissCodeMode = viewModel::dismissCodeMode,
                                 onDismissWebSearch = viewModel::dismissWebSearch,
@@ -301,6 +301,7 @@ fun OmniApp(
                                 onSelectEffort = viewModel::selectEffort,
                                 onToggleThinking = viewModel::toggleThinking,
                                 onMicClick = onRequestVoiceDictation,
+                                onOpenSettings = viewModel::openSettings,
                             )
                         }
                     }

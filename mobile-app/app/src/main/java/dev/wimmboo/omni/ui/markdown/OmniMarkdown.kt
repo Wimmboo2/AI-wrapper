@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -65,9 +66,18 @@ import dev.wimmboo.omni.ui.theme.OmniTheme
 import kotlinx.coroutines.delay
 import java.net.URI
 
+private val HR_RE = Regex("^([-*_])\\s*\\1\\s*\\1[\\s\\1]*$")
+private val HEADING_RE = Regex("^(#{1,3})\\s+(.+)$")
+private val BULLET_MATCH_RE = Regex("^[-*+]\\s+.+$")
+private val BULLET_EXTRACT_RE = Regex("^\\s*[-*+]\\s+(.+)$")
+private val ORDERED_MATCH_RE = Regex("^\\d+\\.\\s+.+$")
+private val ORDERED_EXTRACT_RE = Regex("^\\s*(\\d+)\\.\\s+(.+)$")
+private val TABLE_SEP_CELL_RE = Regex("^\\s*:?-{2,}:?\\s*$")
+private val CONTROL_CHARS_RE = Regex("[\\u0000-\\u001F\\u007F]")
+
 private sealed class MdBlock {
     data class Heading(val level: Int, val text: String) : MdBlock()
-    data class CodeBlock(val language: String, val code: String) : MdBlock()
+    data class CodeBlock(val language: String, val code: String, val isClosed: Boolean) : MdBlock()
     data class Blockquote(val lines: List<String>) : MdBlock()
     data class BulletList(val items: List<String>) : MdBlock()
     data class OrderedList(val items: List<Pair<String, String>>) : MdBlock()
@@ -100,20 +110,25 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
                 codeLines += lines[i]
                 i++
             }
-            if (i < lines.size && lines[i].trim().startsWith("```")) i++
-            blocks += MdBlock.CodeBlock(language = lang.ifEmpty { "code" }, code = codeLines.joinToString("\n"))
+            val isClosed = i < lines.size && lines[i].trim().startsWith("```")
+            if (isClosed) i++
+            blocks += MdBlock.CodeBlock(
+                language = lang.ifEmpty { "code" },
+                code = codeLines.joinToString("\n"),
+                isClosed = isClosed,
+            )
             continue
         }
 
         // Horizontal rule
-        if (Regex("^([-*_])\\s*\\1\\s*\\1[\\s\\1]*$").matches(trimmed)) {
+        if (HR_RE.matches(trimmed)) {
             blocks += MdBlock.HorizontalRule
             i++
             continue
         }
 
         // Headings
-        val hMatch = Regex("^(#{1,3})\\s+(.+)$").find(trimmed)
+        val hMatch = HEADING_RE.find(trimmed)
         if (hMatch != null) {
             blocks += MdBlock.Heading(hMatch.groupValues[1].length, hMatch.groupValues[2].trim())
             i++
@@ -145,10 +160,10 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
         }
 
         // Unordered list
-        if (Regex("^[-*+]\\s+.+$").matches(trimmed)) {
+        if (BULLET_MATCH_RE.matches(trimmed)) {
             val items = mutableListOf<String>()
-            while (i < lines.size && Regex("^\\s*[-*+]\\s+(.+)$").matches(lines[i])) {
-                val m = Regex("^\\s*[-*+]\\s+(.+)$").find(lines[i])!!
+            while (i < lines.size) {
+                val m = BULLET_EXTRACT_RE.find(lines[i]) ?: break
                 items += m.groupValues[1]
                 i++
             }
@@ -157,10 +172,10 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
         }
 
         // Ordered list
-        if (Regex("^\\d+\\.\\s+.+$").matches(trimmed)) {
+        if (ORDERED_MATCH_RE.matches(trimmed)) {
             val items = mutableListOf<Pair<String, String>>()
-            while (i < lines.size && Regex("^\\s*(\\d+)\\.\\s+(.+)$").matches(lines[i])) {
-                val m = Regex("^\\s*(\\d+)\\.\\s+(.+)$").find(lines[i])!!
+            while (i < lines.size) {
+                val m = ORDERED_EXTRACT_RE.find(lines[i]) ?: break
                 items += m.groupValues[1] to m.groupValues[2]
                 i++
             }
@@ -176,10 +191,10 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
             if (ct.isEmpty() ||
                 ct.startsWith("```") ||
                 ct.startsWith(">") ||
-                Regex("^(#{1,3})\\s+.+$").matches(ct) ||
-                Regex("^[-*+]\\s+.+$").matches(ct) ||
-                Regex("^\\d+\\.\\s+.+$").matches(ct) ||
-                Regex("^([-*_])\\s*\\1\\s*\\1[\\s\\1]*$").matches(ct) ||
+                HEADING_RE.matches(ct) ||
+                BULLET_MATCH_RE.matches(ct) ||
+                ORDERED_MATCH_RE.matches(ct) ||
+                HR_RE.matches(ct) ||
                 (ct.contains('|') && i + 1 < lines.size && isTableSeparator(lines[i + 1]))
             ) {
                 break
@@ -200,14 +215,14 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
 private fun isTableSeparator(line: String): Boolean {
     val t = line.trim().removePrefix("|").removeSuffix("|")
     if (t.isBlank()) return false
-    return t.split('|').all { cell -> Regex("^\\s*:?-{2,}:?\\s*$").matches(cell) }
+    return t.split('|').all { cell -> TABLE_SEP_CELL_RE.matches(cell) }
 }
 
 private fun splitTableRow(line: String): List<String> =
     line.trim().removePrefix("|").removeSuffix("|").split('|').map { it.trim() }
 
 private fun sanitizeHref(raw: String): String? {
-    val clean = raw.replace(Regex("[\\u0000-\\u001F\\u007F]"), "").trim()
+    val clean = raw.replace(CONTROL_CHARS_RE, "").trim()
     if (clean.isEmpty()) return null
     return try {
         val uri = URI(clean)
@@ -242,20 +257,6 @@ fun OmniMarkdown(
     val colors = OmniTheme.colors
     val blocks = remember(text) { parseMarkdownBlocks(text) }
 
-    val cursorAlpha = if (streaming) {
-        val inf = rememberInfiniteTransition(label = "streamCursor")
-        val alpha by inf.animateFloat(
-            initialValue = 0.7f,
-            targetValue = 0f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(500),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "cursorBlink",
-        )
-        alpha
-    } else 0f
-
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -281,7 +282,6 @@ fun OmniMarkdown(
                         ),
                         sources = if (streaming) emptyList() else sources,
                         showCursor = streaming && isLast,
-                        cursorAlpha = cursorAlpha,
                         onCitationClick = onCitationClick,
                     )
                 }
@@ -290,6 +290,7 @@ fun OmniMarkdown(
                     CodeBlockView(
                         language = block.language,
                         code = block.code,
+                        activeStreamingBlock = streaming && isLast && !block.isClosed,
                         onPreview = { onPreviewCode(block.code, block.language) },
                         onDownload = { onDownloadCode(block.code, block.language) },
                         onCopyToast = onCopyToast,
@@ -320,7 +321,6 @@ fun OmniMarkdown(
                             ),
                             sources = if (streaming) emptyList() else sources,
                             showCursor = streaming && isLast,
-                            cursorAlpha = cursorAlpha,
                             onCitationClick = onCitationClick,
                         )
                     }
@@ -347,7 +347,6 @@ fun OmniMarkdown(
                                     ),
                                     sources = if (streaming) emptyList() else sources,
                                     showCursor = streaming && isLast && itemIdx == block.items.lastIndex,
-                                    cursorAlpha = cursorAlpha,
                                     onCitationClick = onCitationClick,
                                     modifier = Modifier.weight(1f),
                                 )
@@ -377,7 +376,6 @@ fun OmniMarkdown(
                                     ),
                                     sources = if (streaming) emptyList() else sources,
                                     showCursor = streaming && isLast && itemIdx == block.items.lastIndex,
-                                    cursorAlpha = cursorAlpha,
                                     onCitationClick = onCitationClick,
                                     modifier = Modifier.weight(1f),
                                 )
@@ -409,7 +407,6 @@ fun OmniMarkdown(
                         ),
                         sources = if (streaming) emptyList() else sources,
                         showCursor = streaming && isLast,
-                        cursorAlpha = cursorAlpha,
                         onCitationClick = onCitationClick,
                     )
                 }
@@ -419,138 +416,155 @@ fun OmniMarkdown(
 }
 
 @Composable
+private fun StreamingCursorBox(color: Color) {
+    val inf = rememberInfiniteTransition(label = "streamCursor")
+    val cursorAlpha by inf.animateFloat(
+        initialValue = 0.7f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "cursorBlink",
+    )
+    Box(
+        modifier = Modifier
+            .padding(start = 2.dp)
+            .size(width = 6.dp, height = 14.dp)
+            .graphicsLayer { alpha = cursorAlpha }
+            .clip(RoundedCornerShape(1.dp))
+            .background(color),
+    )
+}
+
+@Composable
 private fun InlineRichText(
     raw: String,
     style: TextStyle,
     sources: List<SearchSource>,
     showCursor: Boolean,
-    cursorAlpha: Float,
     onCitationClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = OmniTheme.colors
     val uriHandler = LocalUriHandler.current
-    val inlineMap = mutableMapOf<String, InlineTextContent>()
 
-    val annotated = buildAnnotatedString {
-        var cursor = 0
-        for (m in INLINE_TOKEN_RE.findAll(raw)) {
-            if (m.range.first > cursor) {
-                append(raw.substring(cursor, m.range.first))
-            }
-            when {
-                m.groups[1] != null -> {
-                    // `inline code`
-                    pushStyle(
-                        SpanStyle(
-                            fontFamily = JetBrainsMonoFontFamily,
-                            fontSize = style.fontSize * 0.88f,
-                            background = colors.bgInlineCode,
-                            color = colors.text,
-                        ),
-                    )
-                    append(" ${m.groups[1]!!.value} ")
-                    pop()
+    val (annotated, inlineMap) = remember(raw, style, sources, showCursor, colors) {
+        val map = mutableMapOf<String, InlineTextContent>()
+        val text = buildAnnotatedString {
+            var cursor = 0
+            for (m in INLINE_TOKEN_RE.findAll(raw)) {
+                if (m.range.first > cursor) {
+                    append(raw.substring(cursor, m.range.first))
                 }
-                m.groups[2] != null -> {
-                    pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontStyle = FontStyle.Italic))
-                    append(m.groups[2]!!.value)
-                    pop()
-                }
-                m.groups[3] != null -> {
-                    pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold))
-                    append(m.groups[3]!!.value)
-                    pop()
-                }
-                m.groups[4] != null -> {
-                    pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
-                    append(m.groups[4]!!.value)
-                    pop()
-                }
-                m.groups[5] != null -> {
-                    pushStyle(SpanStyle(textDecoration = TextDecoration.LineThrough))
-                    append(m.groups[5]!!.value)
-                    pop()
-                }
-                m.groups[6] != null && m.groups[7] != null -> {
-                    val label = m.groups[6]!!.value
-                    val href = m.groups[7]!!.value
-                    val numericLink = label.trim().toIntOrNull()
-                    if (numericLink != null && numericLink in 1..sources.size) {
-                        val chipId = "cite_${numericLink}_${m.range.first}"
-                        appendInlineContent(chipId, "[$numericLink]")
-                        inlineMap[chipId] = buildCitationInlineContent(
-                            index = numericLink,
-                            source = sources[numericLink - 1],
-                            colors = colors,
-                            onClick = { onCitationClick(numericLink) },
+                when {
+                    m.groups[1] != null -> {
+                        // `inline code`
+                        pushStyle(
+                            SpanStyle(
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontSize = style.fontSize * 0.88f,
+                                background = colors.bgInlineCode,
+                                color = colors.text,
+                            ),
                         )
-                    } else {
-                        val safe = sanitizeHref(href)
-                        if (safe != null) {
-                            pushLink(
-                                LinkAnnotation.Url(
-                                    url = safe,
-                                    styles = TextLinkStyles(
-                                        style = SpanStyle(
-                                            color = colors.accent,
-                                            textDecoration = TextDecoration.None,
-                                        ),
-                                    ),
-                                    linkInteractionListener = {
-                                        try { uriHandler.openUri(safe) } catch (_: Exception) {}
-                                    },
-                                ),
+                        append(" ${m.groups[1]!!.value} ")
+                        pop()
+                    }
+                    m.groups[2] != null -> {
+                        pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontStyle = FontStyle.Italic))
+                        append(m.groups[2]!!.value)
+                        pop()
+                    }
+                    m.groups[3] != null -> {
+                        pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold))
+                        append(m.groups[3]!!.value)
+                        pop()
+                    }
+                    m.groups[4] != null -> {
+                        pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
+                        append(m.groups[4]!!.value)
+                        pop()
+                    }
+                    m.groups[5] != null -> {
+                        pushStyle(SpanStyle(textDecoration = TextDecoration.LineThrough))
+                        append(m.groups[5]!!.value)
+                        pop()
+                    }
+                    m.groups[6] != null && m.groups[7] != null -> {
+                        val label = m.groups[6]!!.value
+                        val href = m.groups[7]!!.value
+                        val numericLink = label.trim().toIntOrNull()
+                        if (numericLink != null && numericLink in 1..sources.size) {
+                            val chipId = "cite_${numericLink}_${m.range.first}"
+                            appendInlineContent(chipId, "[$numericLink]")
+                            map[chipId] = buildCitationInlineContent(
+                                index = numericLink,
+                                source = sources[numericLink - 1],
+                                colors = colors,
+                                onClick = { onCitationClick(numericLink) },
                             )
-                            append(label)
-                            pop()
+                        } else {
+                            val safe = sanitizeHref(href)
+                            if (safe != null) {
+                                pushLink(
+                                    LinkAnnotation.Url(
+                                        url = safe,
+                                        styles = TextLinkStyles(
+                                            style = SpanStyle(
+                                                color = colors.accent,
+                                                textDecoration = TextDecoration.None,
+                                            ),
+                                        ),
+                                        linkInteractionListener = {
+                                            try { uriHandler.openUri(safe) } catch (_: Exception) {}
+                                        },
+                                    ),
+                                )
+                                append(label)
+                                pop()
+                            } else {
+                                append(m.value)
+                            }
+                        }
+                    }
+                    m.groups[8] != null -> {
+                        val n = m.groups[8]!!.value.toIntOrNull()
+                        if (n != null && n in 1..sources.size) {
+                            val chipId = "cite_${n}_${m.range.first}"
+                            appendInlineContent(chipId, "[$n]")
+                            map[chipId] = buildCitationInlineContent(
+                                index = n,
+                                source = sources[n - 1],
+                                colors = colors,
+                                onClick = { onCitationClick(n) },
+                            )
                         } else {
                             append(m.value)
                         }
                     }
                 }
-                m.groups[8] != null -> {
-                    val n = m.groups[8]!!.value.toIntOrNull()
-                    if (n != null && n in 1..sources.size) {
-                        val chipId = "cite_${n}_${m.range.first}"
-                        appendInlineContent(chipId, "[$n]")
-                        inlineMap[chipId] = buildCitationInlineContent(
-                            index = n,
-                            source = sources[n - 1],
-                            colors = colors,
-                            onClick = { onCitationClick(n) },
-                        )
-                    } else {
-                        append(m.value)
-                    }
-                }
+                cursor = m.range.last + 1
             }
-            cursor = m.range.last + 1
-        }
-        if (cursor < raw.length) {
-            append(raw.substring(cursor))
+            if (cursor < raw.length) {
+                append(raw.substring(cursor))
+            }
+            if (showCursor) {
+                appendInlineContent("stream_cursor", " ")
+            }
         }
         if (showCursor) {
-            appendInlineContent("stream_cursor", " ")
+            map["stream_cursor"] = InlineTextContent(
+                placeholder = Placeholder(
+                    width = 8.sp,
+                    height = 15.sp,
+                    placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                ),
+            ) {
+                StreamingCursorBox(color = colors.accent)
+            }
         }
-    }
-
-    if (showCursor) {
-        inlineMap["stream_cursor"] = InlineTextContent(
-            placeholder = Placeholder(
-                width = 8.sp,
-                height = 15.sp,
-                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
-            ),
-        ) {
-            Box(
-                modifier = Modifier
-                    .padding(start = 2.dp)
-                    .size(width = 6.dp, height = 14.dp)
-                    .clip(RoundedCornerShape(1.dp))
-                    .background(colors.accent.copy(alpha = cursorAlpha)),
-            )
-        }
+        text to map
     }
 
     SelectionContainer(modifier = modifier) {
@@ -615,10 +629,13 @@ private fun buildCitationInlineContent(
     }
 }
 
+private val PLAIN_STREAM_CODE_STYLE = SpanStyle(color = Color(0xFFDCDCDC))
+
 @Composable
 private fun CodeBlockView(
     language: String,
     code: String,
+    activeStreamingBlock: Boolean,
     onPreview: () -> Unit,
     onDownload: () -> Unit,
     onCopyToast: (String) -> Unit,
@@ -635,7 +652,13 @@ private fun CodeBlockView(
         }
     }
 
-    val highlighted = remember(code, language) { CodeHighlighter.highlight(code, language) }
+    val highlighted = remember(code, language, activeStreamingBlock) {
+        if (activeStreamingBlock && code.length > 600) {
+            AnnotatedString(code, PLAIN_STREAM_CODE_STYLE)
+        } else {
+            CodeHighlighter.highlight(code, language)
+        }
+    }
     val previewable = remember(language) { CodeHighlighter.isPreviewable(language) }
 
     Column(

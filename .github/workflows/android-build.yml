@@ -138,12 +138,13 @@ jobs:
 
           - **Exact Omni UI & Theming:** Custom dark (\`#1F1F1F\` / \`#D4A27F\`) and incognito (\`#18181B\` / \`#A89FD4\`) palettes, bundled \`Inter\` / \`Instrument Serif\` / \`JetBrains Mono\` fonts, and adaptive star launcher icon from \`icon.svg\`.
           - **All 12 Providers & 90+ Models:** OpenAI, Anthropic, Google AI Studio, DeepInfra, NVIDIA NIM, Moonshot AI, GMI Cloud, Together AI, DeepSeek, xAI Grok, OpenRouter, and Custom OpenAI-compatible endpoints, plus quick custom model add/edit/delete.
-          - **Full Chat Experience:** Streaming responses via Ktor + OkHttp, Markdown with Prism Tomorrow syntax highlighting, Copy / Wrap / Download / sandboxed Live Code Preview (\`WebView\`), collapsible Thought process (including \`<think>\`, \`<thought>\`, \`[THINK]\`, \`<seed:think>\`, \`◁think▷\`, \`<|START_THINKING|>\`, and Harmony channels), Agent mode sandbox tool-call execution (E2B & Novita), BYOK web search (native & Tavily with inline citation chips and expandable Sources footer), slash commands, file/image attachments, voice dictation, message editing, regenerate options & branch switching, and full Metrics sheet.
-          - **Privacy & Security:** Room database for persisted chats (incognito stays strictly in memory), Android Keystore AES-256-GCM encryption for all BYOK API keys in DataStore, and 100% web-compatible JSON chat & settings export/import.
-          - **Backend compatibility:** Routes through \`https://omni-api.wimmboo.workers.dev\` with \`worker.js\` completely untouched; defaults \`Origin\` to \`https://claude-like-ai-wrapper.wimmboo.workers.dev\` (editable under Settings → **App Origin**) alongside optional \`X-Omni-Proxy-Key\`.
+          - **Full Chat Experience:** Coalesced streaming responses via Ktor + OkHttp, Markdown with Prism Tomorrow syntax highlighting, Copy / Wrap / Download / sandboxed Live Code Preview (\`WebView\`), collapsible Thought process (including \`<think>\`, \`<thought>\`, \`[THINK]\`, \`<seed:think>\`, \`◁think▷\`, \`<|START_THINKING|>\`, and Harmony channels), Agent mode sandbox tool-call execution (E2B & Novita), BYOK web search via \`/search\` & \`/web\` slash commands, Regenerate menu, and Settings (native & Tavily with inline citation chips and expandable Sources footer), file/image attachments, voice dictation, message editing, branch switching, and full Metrics sheet.
+          - **Privacy & Security:** Pure BYOK (no prefilled personal Worker URL or API keys), Room database for persisted chats (incognito stays strictly in memory), cached Android Keystore AES-256-GCM encryption for all BYOK API keys in DataStore, and 100% web-compatible JSON chat & settings export/import.
+          - **Backend compatibility:** Routes through your self-hosted Cloudflare Worker (\`API Endpoint\` in Settings) with \`worker.js\` completely untouched; supports optional \`App Origin\` (\`ALLOWED_ORIGINS\`) and \`Worker access key\` (\`OMNI_PROXY_KEY\`).
           EOF
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK_PATH" --clobber
+            gh release edit "$TAG" --title "Omni mobile ${VERSION}" --notes-file release-notes.md
           else
             gh release create "$TAG" "$APK_PATH" --title "Omni mobile ${VERSION}" --notes-file release-notes.md
           fi

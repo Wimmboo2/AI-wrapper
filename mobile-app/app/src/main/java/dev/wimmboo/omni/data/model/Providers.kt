@@ -1,13 +1,14 @@
 package dev.wimmboo.omni.data.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+@Immutable
 @Serializable
 data class ModelPreset(
     val id: String,
@@ -20,6 +21,7 @@ data class ModelPreset(
     val effortInfo: Map<String, String>? = null,
 )
 
+@Immutable
 data class ProviderConfig(
     val id: String,
     val name: String,
@@ -30,6 +32,7 @@ data class ProviderConfig(
     val effortDefault: String? = null,
 )
 
+@Immutable
 data class SandboxProviderMeta(
     val id: String,
     val label: String,
@@ -37,6 +40,7 @@ data class SandboxProviderMeta(
     val site: String,
 )
 
+@Immutable
 @Serializable
 data class PromptTemplate(
     val key: String,
@@ -50,8 +54,10 @@ data class PromptTemplate(
 )
 
 object OmniCatalog {
-    const val DEFAULT_WORKER_ENDPOINT = "https://omni-api.wimmboo.workers.dev"
-    const val DEFAULT_APP_ORIGIN = "https://claude-like-ai-wrapper.wimmboo.workers.dev"
+    const val DEFAULT_WORKER_ENDPOINT = ""
+    const val WORKER_ENDPOINT_PLACEHOLDER = "https://your-worker.your-subdomain.workers.dev"
+    const val DEFAULT_APP_ORIGIN = ""
+    const val APP_ORIGIN_PLACEHOLDER = "https://your-site.example.com"
     const val DEFAULT_MODEL_ID = "gpt-6.1-sol"
 
     val CUSTOM_DEFAULT_EFFORT = listOf("low", "medium", "high", "xhigh", "max")

@@ -8,7 +8,9 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.wimmboo.omni.data.model.OmniSettings
 import dev.wimmboo.omni.data.model.SecretsBundle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 private val Context.omniSettingsDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -19,6 +21,8 @@ private val Context.omniSettingsDataStore: DataStore<Preferences> by preferences
  * Persists non-secret settings in DataStore and encrypts all API keys
  * (provider keys, worker proxy key, Tavily key, E2B/Novita sandbox keys)
  * with Android Keystore AES-GCM before writing them to DataStore.
+ * Caches decrypted secrets in memory so non-secret updates (model switch,
+ * effort change, thinking toggle) never re-invoke Keystore encryption.
  */
 class SettingsStore(
     private val context: Context,
@@ -30,7 +34,13 @@ class SettingsStore(
         isLenient = true
     }
 
-    suspend fun loadSettings(): OmniSettings {
+    @Volatile
+    private var cachedCiphertext: String? = null
+
+    @Volatile
+    private var cachedSecrets: SecretsBundle? = null
+
+    suspend fun loadSettings(): OmniSettings = withContext(Dispatchers.IO) {
         val prefs = context.omniSettingsDataStore.data.first()
         val publicRaw = prefs[KEY_PUBLIC_SETTINGS]
         val publicSettings = if (publicRaw != null) {
@@ -45,21 +55,28 @@ class SettingsStore(
 
         val encSecrets = prefs[KEY_ENCRYPTED_SECRETS]
         val secrets = if (encSecrets != null) {
-            val plain = crypto.decrypt(encSecrets)
-            if (plain != null) {
-                try {
-                    json.decodeFromString(SecretsBundle.serializer(), plain)
-                } catch (_: Exception) {
+            if (encSecrets == cachedCiphertext && cachedSecrets != null) {
+                cachedSecrets!!
+            } else {
+                val plain = crypto.decrypt(encSecrets)
+                val decoded = if (plain != null) {
+                    try {
+                        json.decodeFromString(SecretsBundle.serializer(), plain)
+                    } catch (_: Exception) {
+                        SecretsBundle()
+                    }
+                } else {
                     SecretsBundle()
                 }
-            } else {
-                SecretsBundle()
+                cachedCiphertext = encSecrets
+                cachedSecrets = decoded
+                decoded
             }
         } else {
             SecretsBundle()
         }
 
-        return publicSettings.copy(
+        publicSettings.copy(
             apiKey = secrets.apiKey,
             apiKeys = secrets.apiKeys,
             tavilyKey = secrets.tavilyKey,
@@ -69,7 +86,7 @@ class SettingsStore(
         ).normalized()
     }
 
-    suspend fun saveSettings(settings: OmniSettings) {
+    suspend fun saveSettings(settings: OmniSettings) = withContext(Dispatchers.IO) {
         val norm = settings.normalized()
         val publicOnly = norm.copy(
             apiKey = "",
@@ -88,8 +105,15 @@ class SettingsStore(
             sandboxKeys = norm.sandboxKeys,
         )
         val publicJson = json.encodeToString(OmniSettings.serializer(), publicOnly)
-        val secretsJson = json.encodeToString(SecretsBundle.serializer(), secrets)
-        val encrypted = crypto.encrypt(secretsJson)
+        val encrypted = if (secrets == cachedSecrets && cachedCiphertext != null) {
+            cachedCiphertext!!
+        } else {
+            val secretsJson = json.encodeToString(SecretsBundle.serializer(), secrets)
+            val enc = crypto.encrypt(secretsJson)
+            cachedSecrets = secrets
+            cachedCiphertext = enc
+            enc
+        }
 
         context.omniSettingsDataStore.edit { prefs ->
             prefs[KEY_PUBLIC_SETTINGS] = publicJson
@@ -97,12 +121,12 @@ class SettingsStore(
         }
     }
 
-    suspend fun loadActiveChatId(): String? {
+    suspend fun loadActiveChatId(): String? = withContext(Dispatchers.IO) {
         val prefs = context.omniSettingsDataStore.data.first()
-        return prefs[KEY_ACTIVE_CHAT_ID]?.takeIf { it.isNotBlank() }
+        prefs[KEY_ACTIVE_CHAT_ID]?.takeIf { it.isNotBlank() }
     }
 
-    suspend fun saveActiveChatId(chatId: String?) {
+    suspend fun saveActiveChatId(chatId: String?) = withContext(Dispatchers.IO) {
         context.omniSettingsDataStore.edit { prefs ->
             if (chatId.isNullOrBlank()) prefs.remove(KEY_ACTIVE_CHAT_ID)
             else prefs[KEY_ACTIVE_CHAT_ID] = chatId

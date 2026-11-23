@@ -17,23 +17,34 @@ import javax.crypto.spec.GCMParameterSpec
 class OmniKeystoreCrypto(
     private val keyAlias: String = DEFAULT_KEY_ALIAS,
 ) {
-    private fun getOrCreateKey(): SecretKey {
-        val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val existing = ks.getKey(keyAlias, null) as? SecretKey
-        if (existing != null) return existing
+    @Volatile
+    private var cachedKey: SecretKey? = null
 
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-        val spec = KeyGenParameterSpec.Builder(
-            keyAlias,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-        )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(256)
-            .setRandomizedEncryptionRequired(true)
-            .build()
-        generator.init(spec)
-        return generator.generateKey()
+    private fun getOrCreateKey(): SecretKey {
+        cachedKey?.let { return it }
+        return synchronized(this) {
+            cachedKey?.let { return@synchronized it }
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            val existing = ks.getKey(keyAlias, null) as? SecretKey
+            val resolved = if (existing != null) {
+                existing
+            } else {
+                val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+                val spec = KeyGenParameterSpec.Builder(
+                    keyAlias,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                )
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .setRandomizedEncryptionRequired(true)
+                    .build()
+                generator.init(spec)
+                generator.generateKey()
+            }
+            cachedKey = resolved
+            resolved
+        }
     }
 
     fun encrypt(plaintext: String): String {

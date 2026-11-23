@@ -194,10 +194,13 @@ object WorkerStreamParser {
         else -> "The provider returned an error."
     }
 
+    private val WHITESPACE_RE = Regex("\\s+")
+    private val HTTP_CODE_RE = Regex("^(?:Provider error|HTTP) (\\d{3})\\b")
+
     fun friendlyErrorText(raw: String?): String {
-        val msg = (raw ?: "").replace(Regex("\\s+"), " ").trim()
+        val msg = (raw ?: "").replace(WHITESPACE_RE, " ").trim()
         if (msg.isEmpty()) return "The provider returned an error."
-        val coded = Regex("^(?:Provider error|HTTP) (\\d{3})\\b").find(msg)
+        val coded = HTTP_CODE_RE.find(msg)
         if (coded != null) {
             val code = coded.groupValues[1].toIntOrNull() ?: 0
             // Preserve explicit Worker auth/origin messages like HTTP 403: Origin is not allowed

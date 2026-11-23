@@ -41,6 +41,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -276,7 +277,11 @@ fun SidebarDrawerContent(
                         .padding(horizontal = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    items(filtered, key = { it.id }) { chat ->
+                    items(
+                        items = filtered,
+                        key = { it.id },
+                        contentType = { "chat_row" },
+                    ) { chat ->
                         val isActive = chat.id == activeChatId
                         val isStreaming = chat.id in streamingChatIds
                         val snippet = remember(chat, q) {
@@ -478,7 +483,7 @@ private fun SidebarChatRow(
 
         if (isStreaming) {
             val inf = rememberInfiniteTransition(label = "streamDot")
-            val alpha by inf.animateFloat(
+            val dotAlpha by inf.animateFloat(
                 initialValue = 0.4f,
                 targetValue = 1f,
                 animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
@@ -488,7 +493,7 @@ private fun SidebarChatRow(
                 modifier = Modifier
                     .padding(end = 2.dp)
                     .size(7.dp)
-                    .alpha(alpha)
+                    .graphicsLayer { alpha = dotAlpha }
                     .clip(CircleShape)
                     .background(colors.accent),
             )
@@ -566,13 +571,15 @@ fun OmniIconButton(
     }
 }
 
+private val SNIPPET_WHITESPACE_RE = Regex("\\s+")
+
 private fun findSearchSnippet(chat: Chat, q: String): String? {
     for (m in chat.messages) {
         val idx = m.content.lowercase().indexOf(q)
         if (idx != -1) {
             val start = (idx - 20).coerceAtLeast(0)
             val end = (idx + q.length + 30).coerceAtMost(m.content.length)
-            val body = m.content.substring(start, end).replace(Regex("\\s+"), " ")
+            val body = m.content.substring(start, end).replace(SNIPPET_WHITESPACE_RE, " ")
             return (if (start > 0) "..." else "") + body + (if (end < m.content.length) "..." else "")
         }
     }

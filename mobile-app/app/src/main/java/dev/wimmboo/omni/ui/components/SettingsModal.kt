@@ -158,7 +158,7 @@ fun SettingsModal(
                         SettingTextField(
                             value = draft.apiEndpoint,
                             onValueChange = { draft = draft.copy(apiEndpoint = it) },
-                            placeholder = OmniCatalog.DEFAULT_WORKER_ENDPOINT,
+                            placeholder = OmniCatalog.WORKER_ENDPOINT_PLACEHOLDER,
                             mono = true,
                         )
                         if (providerCfg != null && providerCfg.defaultEndpoint.isNotEmpty()) {
@@ -175,12 +175,12 @@ fun SettingsModal(
                     // 2. App Origin (native ALLOWED_ORIGINS support without touching worker.js)
                     SettingGroup(
                         label = "App Origin",
-                        description = "Origin header sent to a Worker locked with ALLOWED_ORIGINS. Defaults to the hosted web frontend; leave empty if your Worker uses OMNI_PROXY_KEY only.",
+                        description = "Optional Origin header sent when your Worker is locked with ALLOWED_ORIGINS. Leave empty if your Worker uses OMNI_PROXY_KEY or allows requests without an Origin.",
                     ) {
                         SettingTextField(
                             value = draft.appOrigin,
                             onValueChange = { draft = draft.copy(appOrigin = it) },
-                            placeholder = OmniCatalog.DEFAULT_APP_ORIGIN,
+                            placeholder = OmniCatalog.APP_ORIGIN_PLACEHOLDER,
                             mono = true,
                         )
                     }

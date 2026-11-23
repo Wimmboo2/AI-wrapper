@@ -91,7 +91,6 @@ fun ComposerCard(
     onAttachClick: () -> Unit,
     onRemoveFile: (String) -> Unit,
     onToggleAgent: () -> Unit,
-    onToggleWebSearch: () -> Unit,
     onApplySlashTemplate: (PromptTemplate) -> Unit,
     onDismissCodeMode: () -> Unit,
     onDismissWebSearch: () -> Unit,
@@ -102,6 +101,7 @@ fun ComposerCard(
     onSelectEffort: (String) -> Unit,
     onToggleThinking: (Boolean) -> Unit,
     onMicClick: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = OmniTheme.colors
@@ -357,15 +357,6 @@ fun ComposerCard(
                         onClick = onToggleAgent,
                     )
 
-                    // Web search quick toggle (.web-search-pill mobile icon button)
-                    ComposerSmallIconBtn(
-                        icon = OmniIcons.Search,
-                        contentDescription = "Toggle web search",
-                        tint = if (webSearch) colors.accent else colors.textFaint,
-                        background = if (webSearch) colors.accentSoft else Color.Transparent,
-                        onClick = onToggleWebSearch,
-                    )
-
                     // Model picker trigger pill
                     Row(
                         modifier = Modifier
@@ -569,7 +560,7 @@ fun ComposerCard(
 
         // Composer footer note
         if (showFooterNote) {
-            val missingConfig = !incognito && (settings.effectiveApiKey().isBlank() || settings.apiEndpoint.isBlank())
+            val missingConfig = !incognito && (settings.effectiveApiKey().isBlank() || !settings.hasValidEndpoint())
             val noteText = when {
                 incognito -> "Incognito chats aren\u2019t stored on this device."
                 missingConfig -> "Open Settings to add your API key and endpoint."
@@ -583,6 +574,7 @@ fun ComposerCard(
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(if (missingConfig) Modifier.clickable(onClick = onOpenSettings) else Modifier)
                     .padding(top = 8.dp),
             )
         }
@@ -640,9 +632,7 @@ private fun PendingFilePill(
     onRemove: () -> Unit,
 ) {
     val colors = OmniTheme.colors
-    val thumb = remember(file.data, file.isImage) {
-        if (file.isImage) decodeDataUrlBitmap(file.data) else null
-    }
+    val thumb = if (file.isImage) rememberDecodedDataUrlBitmap(file.data) else null
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
@@ -912,7 +902,11 @@ private fun ModelPickerBottomSheet(
                             modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 4.dp),
                         )
                     }
-                    items(filteredCustom, key = { "custom_${it.id}" }) { m ->
+                    items(
+                        items = filteredCustom,
+                        key = { "custom_${it.id}" },
+                        contentType = { "custom_model" },
+                    ) { m ->
                         ModelPickerRow(
                             model = m,
                             selected = m.id == currentModelId,
@@ -944,7 +938,11 @@ private fun ModelPickerBottomSheet(
                             modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 4.dp),
                         )
                     }
-                    items(filteredPresets, key = { "preset_${it.id}" }) { m ->
+                    items(
+                        items = filteredPresets,
+                        key = { "preset_${it.id}" },
+                        contentType = { "preset_model" },
+                    ) { m ->
                         ModelPickerRow(
                             model = m,
                             selected = m.id == currentModelId,

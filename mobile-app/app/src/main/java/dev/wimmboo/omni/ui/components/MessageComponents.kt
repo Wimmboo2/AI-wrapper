@@ -2,6 +2,7 @@ package dev.wimmboo.omni.ui.components
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.util.LruCache
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -52,6 +53,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
@@ -71,7 +73,9 @@ import dev.wimmboo.omni.ui.markdown.OmniMarkdown
 import dev.wimmboo.omni.ui.theme.InterFontFamily
 import dev.wimmboo.omni.ui.theme.JetBrainsMonoFontFamily
 import dev.wimmboo.omni.ui.theme.OmniTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -230,7 +234,7 @@ private fun UserMessageContent(msg: ChatMessage) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         imageUrls.forEach { dataUrl ->
-            val bitmap = remember(dataUrl) { decodeDataUrlBitmap(dataUrl) }
+            val bitmap = rememberDecodedDataUrlBitmap(dataUrl)
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap,
@@ -528,7 +532,7 @@ private fun ThinkingLiveRow(baseLabel: String) {
         Box(
             modifier = Modifier
                 .size(8.dp)
-                .alpha(dotAlpha)
+                .graphicsLayer { alpha = dotAlpha }
                 .clip(CircleShape)
                 .background(colors.accent),
         )
@@ -930,6 +934,27 @@ private fun SearchErrorNote(
             )
         }
     }
+}
+
+private val decodedBitmapCache = LruCache<Int, ImageBitmap>(24)
+
+@Composable
+fun rememberDecodedDataUrlBitmap(dataUrl: String): ImageBitmap? {
+    if (dataUrl.isEmpty()) return null
+    val key = dataUrl.hashCode()
+    var bitmap by remember(key) { mutableStateOf(decodedBitmapCache.get(key)) }
+    LaunchedEffect(key) {
+        if (bitmap == null) {
+            val decoded = withContext(Dispatchers.Default) {
+                decodeDataUrlBitmap(dataUrl)
+            }
+            if (decoded != null) {
+                decodedBitmapCache.put(key, decoded)
+                bitmap = decoded
+            }
+        }
+    }
+    return bitmap
 }
 
 fun decodeDataUrlBitmap(dataUrl: String): ImageBitmap? {

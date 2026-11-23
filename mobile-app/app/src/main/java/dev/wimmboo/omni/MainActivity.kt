@@ -170,10 +170,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchExportChats() {
-        val (json, count) = viewModel.buildChatsExportJson()
-        pendingExportJson = json
-        pendingExportToast = "Chats exported ($count saved)"
-        exportJsonLauncher.launch(BackupManager.defaultChatsFilename())
+        lifecycleScope.launch {
+            val (json, count) = viewModel.buildChatsExportJsonAsync()
+            pendingExportJson = json
+            pendingExportToast = "Chats exported ($count saved)"
+            exportJsonLauncher.launch(BackupManager.defaultChatsFilename())
+        }
     }
 
     private fun launchImportChats() {
@@ -181,9 +183,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchExportSettings(draft: OmniSettings) {
-        pendingExportJson = viewModel.buildSettingsExportJson(draft)
-        pendingExportToast = "Settings exported. The file includes your API keys."
-        exportJsonLauncher.launch(BackupManager.defaultSettingsFilename())
+        lifecycleScope.launch {
+            pendingExportJson = viewModel.buildSettingsExportJsonAsync(draft)
+            pendingExportToast = "Settings exported. The file includes your API keys."
+            exportJsonLauncher.launch(BackupManager.defaultSettingsFilename())
+        }
     }
 
     private fun launchImportSettings() {

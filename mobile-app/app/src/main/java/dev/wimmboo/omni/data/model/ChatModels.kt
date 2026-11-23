@@ -1,5 +1,6 @@
 package dev.wimmboo.omni.data.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -14,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.UUID
 
+@Immutable
 @Serializable
 data class SearchSource(
     val title: String = "",
@@ -23,6 +25,7 @@ data class SearchSource(
     val snippet: String = "",
 )
 
+@Immutable
 @Serializable
 data class SearchData(
     val query: String = "",
@@ -34,6 +37,7 @@ data class SearchData(
     val code: String? = null,
 )
 
+@Immutable
 @Serializable
 data class ToolCallRecord(
     val id: String = "",
@@ -42,6 +46,7 @@ data class ToolCallRecord(
     val args: JsonObject = JsonObject(emptyMap()),
 )
 
+@Immutable
 @Serializable
 data class ToolResultRecord(
     val id: String = "",
@@ -49,6 +54,7 @@ data class ToolResultRecord(
     val content: String = "",
 )
 
+@Immutable
 @Serializable
 data class ToolStep(
     val text: String = "",
@@ -56,6 +62,7 @@ data class ToolStep(
     val results: List<ToolResultRecord> = emptyList(),
 )
 
+@Immutable
 @Serializable
 data class MessageMetrics(
     val turns: Int = 0,
@@ -89,6 +96,7 @@ data class MessageMetrics(
     val live: Boolean = false,
 )
 
+@Immutable
 @Serializable
 data class MessageBranch(
     val content: String = "",
@@ -101,6 +109,7 @@ data class MessageBranch(
     @SerialName("_outTokens") val outTokens: Long? = null,
 )
 
+@Immutable
 @Serializable
 data class ChatMessage(
     val role: String,
@@ -151,6 +160,7 @@ data class ChatMessage(
     }
 }
 
+@Immutable
 @Serializable
 data class Chat(
     val id: String = generateChatId(),
@@ -169,6 +179,7 @@ data class Chat(
     fun recency(): Long = if (updatedAt > 0L) updatedAt else createdAt
 }
 
+@Immutable
 data class PendingFile(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -184,6 +195,22 @@ data class UserMessagePayload(
     val displayContent: String,
 )
 
+private val WHITESPACE_COLLAPSE_RE = Regex("\\s+")
+private val ATTACHED_STRIP_RE = Regex("\\n*\\[Attached:[^\\]]*]\\s*$")
+private val ATTACHED_EXTRACT_RE = Regex("\\[Attached:\\s*([^\\]]*)]")
+private val DATA_URL_MIME_RE = Regex("^data:([^;,]+)[;,]")
+private val EXT_MIME_MAP = mapOf(
+    "txt" to "text/plain",
+    "md" to "text/markdown",
+    "csv" to "text/csv",
+    "json" to "application/json",
+    "py" to "text/x-python",
+    "js" to "text/javascript",
+    "ts" to "text/typescript",
+    "html" to "text/html",
+    "css" to "text/css",
+)
+
 fun generateChatId(): String {
     val timePart = System.currentTimeMillis().toString(36)
     val randPart = UUID.randomUUID().toString().replace("-", "").take(6)
@@ -191,16 +218,16 @@ fun generateChatId(): String {
 }
 
 fun deriveTitle(text: String): String {
-    val clean = text.replace(Regex("\\s+"), " ").trim()
+    val clean = text.replace(WHITESPACE_COLLAPSE_RE, " ").trim()
     return if (clean.length > 42) clean.take(42) + "\u2026" else clean
 }
 
 fun stripAttachmentMarker(text: String): String =
-    text.replace(Regex("\\n*\\[Attached:[^\\]]*]\\s*$"), "").trim()
+    text.replace(ATTACHED_STRIP_RE, "").trim()
 
 fun restorePendingFilesFromMessage(msg: ChatMessage): List<PendingFile> {
     val api = msg.apiContent as? JsonArray ?: return emptyList()
-    val markerMatch = Regex("\\[Attached:\\s*([^\\]]*)]").find(msg.content)
+    val markerMatch = ATTACHED_EXTRACT_RE.find(msg.content)
     val markerNames = markerMatch?.groupValues?.getOrNull(1)
         ?.split(",")
         ?.map { it.trim() }
@@ -209,23 +236,12 @@ fun restorePendingFilesFromMessage(msg: ChatMessage): List<PendingFile> {
 
     val files = mutableListOf<PendingFile>()
     var mi = 0
-    val extMap = mapOf(
-        "txt" to "text/plain",
-        "md" to "text/markdown",
-        "csv" to "text/csv",
-        "json" to "application/json",
-        "py" to "text/x-python",
-        "js" to "text/javascript",
-        "ts" to "text/typescript",
-        "html" to "text/html",
-        "css" to "text/css",
-    )
     for (partEl in api) {
         val part = partEl as? JsonObject ?: continue
         val type = part["type"]?.jsonPrimitive?.contentOrNull
         if (type == "image_url") {
             val url = part["image_url"]?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull ?: continue
-            val mime = Regex("^data:([^;,]+)[;,]").find(url)?.groupValues?.getOrNull(1) ?: "image/png"
+            val mime = DATA_URL_MIME_RE.find(url)?.groupValues?.getOrNull(1) ?: "image/png"
             val ext = if (mime == "image/png") ".png" else ".jpg"
             val imgName = markerNames.getOrNull(mi) ?: "Image ${files.size + 1}$ext"
             files += PendingFile(name = imgName, type = mime, data = url, size = 0L)
@@ -238,7 +254,7 @@ fun restorePendingFilesFromMessage(msg: ChatMessage): List<PendingFile> {
                 val fname = if (nl == -1) body else body.substring(0, nl).removeSuffix("]")
                 val fdata = if (nl == -1) "" else body.substring(nl + 1)
                 val ext = fname.substringAfterLast('.', "").lowercase()
-                val ftype = extMap[ext] ?: "text/plain"
+                val ftype = EXT_MIME_MAP[ext] ?: "text/plain"
                 files += PendingFile(name = fname, type = ftype, data = fdata, size = 0L)
                 mi++
             }

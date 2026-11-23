@@ -36,6 +36,7 @@ import dev.wimmboo.omni.domain.MetricsCalculator
 import dev.wimmboo.omni.domain.ServerTimingData
 import dev.wimmboo.omni.domain.ThinkSplitter
 import dev.wimmboo.omni.domain.TurnRecord
+import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,6 +58,7 @@ import kotlinx.serialization.json.put
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
+@Immutable
 data class ToastMessage(
     val text: String,
     val isInfo: Boolean = false,
@@ -67,11 +69,13 @@ data class ToastMessage(
     }
 }
 
+@Immutable
 data class EditingState(
     val chatId: String,
     val msgIndex: Int,
 )
 
+@Immutable
 data class SendOptions(
     val skipUserPush: Boolean = false,
     val searchMode: String? = null,
@@ -79,11 +83,13 @@ data class SendOptions(
     val effort: String? = null,
 )
 
+@Immutable
 data class CodePreviewState(
     val code: String,
     val language: String,
 )
 
+@Immutable
 data class OmniUiState(
     val initialized: Boolean = false,
     val settings: OmniSettings = OmniSettings(),
@@ -117,6 +123,12 @@ data class OmniUiState(
 }
 
 class OmniViewModel(application: Application) : AndroidViewModel(application) {
+    companion object {
+        private val SLASH_SEARCH_RE = Regex("^/search\\b\\s*([\\s\\S]*)$", RegexOption.IGNORE_CASE)
+        private val WHITESPACE_RE = Regex("\\s+")
+        private const val STREAM_UI_FRAME_MS = 32.0
+    }
+
     private val settingsStore = SettingsStore(application)
     private val chatRepo = ChatRepository(OmniDatabase.getInstance(application).chatDao())
     private val workerClient = WorkerClient()
@@ -331,8 +343,8 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun searchCommandQuery(text: String): String? {
-        val m = Regex("^/search\\b\\s*([\\s\\S]*)$", RegexOption.IGNORE_CASE).find(text) ?: return null
-        return m.groupValues[1].replace(Regex("\\s+"), " ").trim()
+        val m = SLASH_SEARCH_RE.find(text) ?: return null
+        return m.groupValues[1].replace(WHITESPACE_RE, " ").trim()
     }
 
     fun applySlashTemplate(item: PromptTemplate) {
@@ -365,12 +377,6 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissCodeMode() {
         _uiState.update { it.copy(codeMode = false) }
         showToast("Code mode disabled", isInfo = true)
-    }
-
-    fun toggleWebSearch() {
-        val next = !_uiState.value.webSearch
-        _uiState.update { it.copy(webSearch = next) }
-        showToast(if (next) "Web search activated" else "Web search disabled", isInfo = true)
     }
 
     fun dismissWebSearch() {
@@ -741,6 +747,10 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
             showToast("Set your API endpoint in Settings first")
             return
         }
+        if (!settings.hasValidEndpoint()) {
+            showToast("Enter a valid http or https API endpoint in Settings")
+            return
+        }
         val effectiveKey = settings.effectiveApiKey()
         if (effectiveKey.isBlank()) {
             showToast("Set your API key in Settings first")
@@ -896,7 +906,7 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
         val chatId = chat.id
         val isIncognitoChat = chat.incognito
 
-        val job = viewModelScope.launch {
+        val job = viewModelScope.launch(Dispatchers.Default) {
             runStreamingConversation(
                 chatId = chatId,
                 isIncognitoChat = isIncognitoChat,
@@ -943,8 +953,32 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
         var lastStopReason: String? = null
         val thinkKey = settings.thinkModelKey()
 
-        fun pushAssistantUpdate(persist: Boolean = false) {
-            updateAssistantMessage(chatId, isIncognitoChat, assistantIndex, assistantMsg, persist = persist)
+        var lastUiPushMs = 0.0
+        var trailingPushJob: Job? = null
+
+        fun pushAssistantUpdate(force: Boolean = false, persist: Boolean = false) {
+            if (force || persist) {
+                trailingPushJob?.cancel()
+                trailingPushJob = null
+                lastUiPushMs = nowMonoMs()
+                updateAssistantMessage(chatId, isIncognitoChat, assistantIndex, assistantMsg, persist = persist)
+                return
+            }
+            val now = nowMonoMs()
+            val elapsed = now - lastUiPushMs
+            if (elapsed >= STREAM_UI_FRAME_MS) {
+                trailingPushJob?.cancel()
+                trailingPushJob = null
+                lastUiPushMs = now
+                updateAssistantMessage(chatId, isIncognitoChat, assistantIndex, assistantMsg, persist = false)
+            } else if (trailingPushJob?.isActive != true) {
+                val waitMs = (STREAM_UI_FRAME_MS - elapsed).toLong().coerceAtLeast(8L)
+                trailingPushJob = viewModelScope.launch(Dispatchers.Default) {
+                    delay(waitMs)
+                    lastUiPushMs = nowMonoMs()
+                    updateAssistantMessage(chatId, isIncognitoChat, assistantIndex, assistantMsg, persist = false)
+                }
+            }
         }
 
         fun setStatusLabel(label: String) {
@@ -1044,8 +1078,8 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
                     thinkSplit.buf = ""
                     if (rest.isNotEmpty() && showThinking) {
                         assistantMsg = assistantMsg.copy(thinking = assistantMsg.thinking + rest)
-                        pushAssistantUpdate()
                     }
+                    pushAssistantUpdate(force = true)
                     return
                 }
                 val tail = thinkSplit.flush()
@@ -1068,7 +1102,7 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
                     val nextContent = if (tail.text.isNotEmpty()) assistantMsg.content + tail.text else assistantMsg.content
                     assistantMsg = assistantMsg.copy(thinking = nextThinking, content = nextContent)
                 }
-                pushAssistantUpdate()
+                pushAssistantUpdate(force = true)
             }
 
             try {
@@ -1143,7 +1177,7 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
                                 setStatusLabel(srch.error)
                             }
                         }
-                        pushAssistantUpdate()
+                        pushAssistantUpdate(force = true)
                     }
 
                     if (!event.error.isNullOrEmpty()) {
@@ -1218,13 +1252,14 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
                     steps = nextSteps,
                     content = assistantMsg.content.substring(0, turnTextStart),
                 )
-                pushAssistantUpdate(persist = !isIncognitoChat)
+                pushAssistantUpdate(force = true, persist = !isIncognitoChat)
 
                 currentMessages += stepToApiMessages(toolStep)
                 if (capped) includeTools = false
                 step++
             }
 
+            trailingPushJob?.cancel()
             val finalMetrics = MetricsCalculator.finalizeMetrics(
                 runStartMs = runStartMs,
                 nowMs = nowMonoMs(),
@@ -1249,6 +1284,7 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
             finalizeChatMetricsAndPersist(chatId, isIncognitoChat, assistantIndex, assistantMsg, finalMetrics)
         } catch (ce: CancellationException) {
             withContext(NonCancellable) {
+                trailingPushJob?.cancel()
                 val keepOpen = assistantMsg.thinking.isNotEmpty() && !assistantMsg.thinkingComplete
                 val partialContent = assistantMsg.content.ifEmpty { "*(Generation stopped)*" }
                 val partialMetrics = MetricsCalculator.finalizeMetrics(
@@ -1273,6 +1309,7 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
                 finalizeChatMetricsAndPersist(chatId, isIncognitoChat, assistantIndex, assistantMsg, partialMetrics)
             }
         } catch (e: Exception) {
+            trailingPushJob?.cancel()
             val shown = WorkerStreamParser.friendlyErrorText(e.message)
             val errContent = assistantMsg.content.ifEmpty { "Error: $shown" }
             val partialMetrics = MetricsCalculator.finalizeMetrics(
@@ -1300,6 +1337,7 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
             }
         } finally {
             withContext(NonCancellable) {
+                trailingPushJob?.cancel()
                 streamJobs.remove(chatId)
                 killSandboxSuspend(chatId)
                 _uiState.update {
@@ -1362,26 +1400,29 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
         return jsonStr to persisted.size
     }
 
+    suspend fun buildChatsExportJsonAsync(): Pair<String, Int> =
+        withContext(Dispatchers.Default) { buildChatsExportJson() }
+
     fun importChatsFromJson(raw: String) {
-        val existingIds = _uiState.value.chats.map { it.id }.toSet()
-        when (val result = BackupManager.importChatsJson(raw, existingIds)) {
-            is ChatImportResult.Error -> showToast(result.message)
-            is ChatImportResult.Success -> {
-                if (result.newChats.isEmpty()) {
-                    showToast("No new chats to import (all already exist)")
-                    return
-                }
-                val merged = (result.newChats + _uiState.value.chats).sortedWith(ChatComparator)
-                val nextActive = _uiState.value.activeChatId ?: merged.firstOrNull()?.id
-                _uiState.update { it.copy(chats = merged, activeChatId = nextActive) }
-                viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
+            val existingIds = _uiState.value.chats.map { it.id }.toSet()
+            when (val result = BackupManager.importChatsJson(raw, existingIds)) {
+                is ChatImportResult.Error -> showToast(result.message)
+                is ChatImportResult.Success -> {
+                    if (result.newChats.isEmpty()) {
+                        showToast("No new chats to import (all already exist)")
+                        return@launch
+                    }
+                    val merged = (result.newChats + _uiState.value.chats).sortedWith(ChatComparator)
+                    val nextActive = _uiState.value.activeChatId ?: merged.firstOrNull()?.id
+                    _uiState.update { it.copy(chats = merged, activeChatId = nextActive) }
                     result.newChats.forEach { chatRepo.saveChat(it) }
                     if (nextActive != null && !_uiState.value.incognito) {
                         settingsStore.saveActiveChatId(nextActive)
                     }
+                    val n = result.newChats.size
+                    showToast("Imported $n chat${if (n != 1) "s" else ""}", isInfo = true)
                 }
-                val n = result.newChats.size
-                showToast("Imported $n chat${if (n != 1) "s" else ""}", isInfo = true)
             }
         }
     }
@@ -1392,11 +1433,16 @@ class OmniViewModel(application: Application) : AndroidViewModel(application) {
         return BackupManager.exportSettingsJson(norm)
     }
 
+    suspend fun buildSettingsExportJsonAsync(settingsToExport: OmniSettings = _uiState.value.settings): String =
+        withContext(Dispatchers.Default) { buildSettingsExportJson(settingsToExport) }
+
     fun prepareSettingsImport(raw: String) {
-        when (val result = BackupManager.importSettingsJson(raw)) {
-            is SettingsImportResult.Error -> showToast(result.message)
-            is SettingsImportResult.Success -> {
-                _uiState.update { it.copy(pendingSettingsImport = result.settings) }
+        viewModelScope.launch(Dispatchers.Default) {
+            when (val result = BackupManager.importSettingsJson(raw)) {
+                is SettingsImportResult.Error -> showToast(result.message)
+                is SettingsImportResult.Success -> {
+                    _uiState.update { it.copy(pendingSettingsImport = result.settings) }
+                }
             }
         }
     }

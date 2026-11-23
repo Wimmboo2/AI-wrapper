@@ -1,8 +1,0 @@
-/target/
-**/target/
-.dioxus/
-dist/
-*.apk
-*.aab
-*.ipa
-.DS_Store

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Omni" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#1F1F1F</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:colorAccent">#D4A27F</item>
+    </style>
+</resources>
